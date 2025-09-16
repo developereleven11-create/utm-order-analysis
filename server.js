@@ -349,6 +349,63 @@ app.get('/api/orders', requireApiKey, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// === ADD THIS ROUTE TO server.js ===
+// Export CSV endpoint. Supports REST fallback (default) and optional bulk download redirect.
+app.get('/api/export.csv', requireApiKey, async (req, res) => {
+  try {
+    const { start, end, useBulk = '0', preview = '0' } = req.query;
+    if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
+
+    // If caller requests bulk mode, point them to bulk.download if ready
+    if (useBulk === '1') {
+      // Check current bulk status
+      const q = `{ currentBulkOperation { id status errorCode url objectCount } }`;
+      const statusResp = await shopifyGraphQL(q);
+      const op = statusResp.data.currentBulkOperation;
+      if (!op) return res.status(400).json({ error: 'No bulk operation found. Start one with /api/bulk/start' });
+      if (op.status !== 'COMPLETED') return res.status(400).json({ error: 'Bulk not ready. Status: ' + op.status });
+      // Redirect to bulk download which streams CSV
+      return res.redirect(303, '/api/bulk/download?preview=' + encodeURIComponent(preview || '0') + '&api_key=' + encodeURIComponent(req.query.api_key || ''));
+    }
+
+    // REST fallback: fetch (capped) orders via REST and stream CSV.
+    const created_at_min = new Date(start + 'T00:00:00Z').toISOString();
+    const created_at_max = new Date(end + 'T23:59:59Z').toISOString();
+
+    // Use MAX_RESULTS env or default (to avoid huge downloads)
+    const MAX = parseInt(process.env.MAX_RESULTS || '5000', 10);
+
+    // fetchAllOrdersREST exists in this server.js (from the bulk implementation)
+    const rows = await fetchAllOrdersREST(created_at_min, created_at_max, MAX);
+
+    // columns
+    const columns = ['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
+
+    // stream CSV
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="shopify-utm-export.csv"');
+
+    // write header
+    res.write(columns.join(',') + '\\n');
+
+    let count = 0;
+    for (const r of rows) {
+      const line = columns.map(k => {
+        const v = r[k] === null || r[k] === undefined ? '' : String(r[k]);
+        return '"' + v.replace(/"/g, '""') + '"';
+      }).join(',');
+      res.write(line + '\\n');
+      count++;
+      // if preview param provided, stop early
+      if (parseInt(preview, 10) && count >= parseInt(preview, 10)) break;
+    }
+    res.end();
+  } catch (err) {
+    console.error('/api/export.csv error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.get('/', (req, res) => res.sendFile(__dirname + '/public/index.html'));
 
