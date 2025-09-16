@@ -330,25 +330,62 @@ async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2
   return mapped;
 }
 
+// Replace your existing /api/orders handler with this (copy/paste)
 app.get('/api/orders', requireApiKey, async (req, res) => {
   try {
     const { start, end, page = '1', pageSize = '100', max } = req.query;
     if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
+
     const created_at_min = new Date(start + 'T00:00:00Z').toISOString();
     const created_at_max = new Date(end + 'T23:59:59Z').toISOString();
+
+    // 1) Ask Shopify for the TRUE number of orders in this date range (cheap endpoint)
+    async function fetchOrdersCount(created_at_min, created_at_max){
+      const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+      const r = await fetch(countUrl, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept': 'application/json' } });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error('Shopify count error: ' + r.status + ' - ' + t);
+      }
+      const j = await r.json();
+      return j.count || 0;
+    }
+
+    // 2) Fetch rows (REST fallback already implemented in your file)
     const MAX = parseInt(max || process.env.MAX_RESULTS || '2000', 10);
-    const all = await fetchAllOrdersREST(created_at_min, created_at_max, MAX);
-    all.sort((a,b)=> new Date(b.created_at) - new Date(a.created_at));
+    const createdRows = await fetchAllOrdersREST(created_at_min, created_at_max, MAX);
+
+    // 3) Get the shopify_total from the count endpoint
+    let shopifyTotal = 0;
+    try {
+      shopifyTotal = await fetchOrdersCount(created_at_min, created_at_max);
+    } catch (e) {
+      console.warn('Could not fetch shopify count:', e.message);
+      shopifyTotal = null; // null indicates we couldn't fetch the total
+    }
+
+    // server-side sort & paginate the fetched rows
+    createdRows.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
     const p = Math.max(1, parseInt(page,10));
     const ps = Math.max(1, Math.min(1000, parseInt(pageSize,10)));
     const startIdx = (p-1)*ps;
-    const pageRows = all.slice(startIdx, startIdx + ps);
-    res.json({ total: all.length, page: p, pageSize: ps, orders: pageRows });
+    const pageRows = createdRows.slice(startIdx, startIdx + ps);
+
+    // Return both the fetched total (rows you returned) and the true shopify total
+    res.json({
+      total_fetched: createdRows.length,   // how many rows server fetched (may be capped)
+      page: p,
+      pageSize: ps,
+      orders: pageRows,
+      shopify_total: shopifyTotal         // the real total count from Shopify (or null if error)
+    });
+
   } catch (err) {
-    console.error(err);
+    console.error('/api/orders error', err);
     res.status(500).json({ error: err.message });
   }
 });
+
 // === ADD THIS ROUTE TO server.js ===
 // Export CSV endpoint. Supports REST fallback (default) and optional bulk download redirect.
 app.get('/api/export.csv', requireApiKey, async (req, res) => {
