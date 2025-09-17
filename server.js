@@ -1,5 +1,7 @@
-// server.js - Shopify UTM Orders Dashboard (API-key auth only)
-// Changes: created_at is formatted to IST (YYYY-MM-DD HH:mm:ss), order_number prefers full `name` value
+// server.js - Shopify UTM Orders Dashboard
+// Default: API endpoints are unrestricted (no API key required).
+// Toggle enforcement by setting ENFORCE_API_KEY=1 and API_KEY=<your_key> in env.
+//
 // Required packages: express, node-fetch@2, cors
 // Ensure package.json has these deps and run `npm install`.
 
@@ -14,21 +16,24 @@ const stream = require('stream');
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Serve frontend (unprotected)
-app.use(express.static('public'));
+app.use(express.static('public')); // serve UI from public/
 
 // ENV vars
 const SHOP = process.env.SHOPIFY_STORE; // e.g. your-store.myshopify.com
 const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN; // Admin API token
-const API_KEY = process.env.API_KEY || 'dev_key';
+const API_KEY = process.env.API_KEY || 'dev_key'; // used only when ENFORCE_API_KEY=1
+const ENFORCE = String(process.env.ENFORCE_API_KEY || '').trim() === '1';
 
 if (!SHOP || !TOKEN) {
   console.warn('Warning: SHOP or TOKEN missing - API calls will fail until env vars are set.');
 }
 
-// API-key middleware
+// Middleware: requireApiKey only when ENFORCE_API_KEY=1
 function requireApiKey(req, res, next){
+  if (!ENFORCE) {
+    // Enforcement disabled — allow all requests through.
+    return next();
+  }
   const key = req.get('x-api-key') || req.query.api_key || '';
   if (!API_KEY || key !== API_KEY){
     return res.status(401).json({ error: 'Unauthorized - invalid API key' });
@@ -37,7 +42,7 @@ function requireApiKey(req, res, next){
 }
 
 /* ------------------------------
-   Helpers
+   Helpers: GraphQL + UTM parsers + date format
    ------------------------------ */
 async function shopifyGraphQL(query, variables = {}) {
   if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
@@ -114,7 +119,6 @@ function extractUtmFromAttributes(attrs){
   return out;
 }
 
-// map a node (from bulk GraphQL) to a row — uses full name for order number and IST formatted created_at
 function mapOrderNodeToRow(node){
   const landing = node.landingSite || node.landing_site || '';
   const referring = node.referringSite || node.referring_site || '';
@@ -129,26 +133,19 @@ function mapOrderNodeToRow(node){
     utm_content: landingU.utm_content || referringU.utm_content || noteU.utm_content || ''
   };
 
-  // Prefer `name` (Shopify order name like "#1001") to get the visible order number; fall back to other fields.
   const rawName = (node.name || node.order_number || node.orderNumber || '') + '';
-  const orderNumberFull = rawName;
-
-  // created_at: convert to IST formatted string
   const createdAtRaw = node.createdAt || node.created_at || '';
-  const createdAtIST = formatDateToIST(createdAtRaw);
-
   return {
     id: node.id || '',
-    order_number: orderNumberFull,
-    created_at: createdAtIST,
+    order_number: rawName,
+    created_at: formatDateToIST(createdAtRaw),
     created_at_raw: createdAtRaw,
     ...utm
   };
 }
 
 /* ------------------------------
-   REST fallback: fetch orders via REST with Link header pagination, capped by maxResults
-   (maps created_at to IST and uses full name for order number)
+   REST fallback: fetch orders via REST (maps to IST + full order name)
    ------------------------------ */
 async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2000){
   if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
@@ -201,7 +198,11 @@ async function fetchOrdersCount(created_at_min, created_at_max){
 }
 
 /* ------------------------------
-   Bulk endpoints (protected by API key)
+   Routes
+   - Bulk start/status/download
+   - /api/orders
+   - /api/export.csv
+   All routes call requireApiKey which is a no-op unless ENFORCE_API_KEY=1
    ------------------------------ */
 
 /* Start bulk */
@@ -271,7 +272,7 @@ app.get('/api/bulk/status', requireApiKey, async (req, res) => {
   }
 });
 
-/* Bulk download -> streams CSV (IST created_at, full order_number) */
+/* Bulk download */
 app.get('/api/bulk/download', requireApiKey, async (req, res) => {
   try {
     const preview = req.query.preview ? parseInt(req.query.preview, 10) : 0;
@@ -334,7 +335,7 @@ app.get('/api/bulk/download', requireApiKey, async (req, res) => {
   }
 });
 
-/* REST orders endpoint (protected) */
+/* REST orders endpoint */
 app.get('/api/orders', requireApiKey, async (req, res) => {
   try {
     const { start, end, page = '1', pageSize = '100', max } = req.query;
@@ -415,7 +416,7 @@ app.get('/api/export.csv', requireApiKey, async (req, res) => {
   }
 });
 
-// serve index.html
+// serve index.html root
 app.get('/', (req, res) => res.sendFile(__dirname + '/public/index.html'));
 
 // Start server
