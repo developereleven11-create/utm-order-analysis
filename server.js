@@ -1,6 +1,6 @@
-// server.js - Shopify Bulk Operations + REST fallback (with Basic Auth middleware applied globally)
-// Required packages: express, node-fetch@2, cors, csv-stringify
-// Make sure package.json includes those deps and run `npm install`.
+// server.js - Shopify Bulk Operations + REST fallback (API-key auth only)
+// Required packages: express, node-fetch@2, cors, csv-stringify (optional for other flows)
+// Ensure package.json has these deps and run `npm install`.
 
 const express = require('express');
 const fetch = require('node-fetch'); // v2
@@ -12,15 +12,20 @@ const stream = require('stream');
 
 const app = express();
 app.use(cors());
-// parse JSON bodies for POST endpoints
 app.use(express.json());
+
+// Serve frontend (unprotected) from /public
+app.use(express.static('public'));
 
 // ENV vars
 const SHOP = process.env.SHOPIFY_STORE; // e.g. your-store.myshopify.com
 const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN; // Admin API token
 const API_KEY = process.env.API_KEY || 'dev_key';
 
-// -------------------------
+if (!SHOP || !TOKEN) {
+  console.warn('Warning: SHOP or TOKEN missing - API calls will fail until env vars are set.');
+}
+
 // Basic auth middleware (x-api-key)
 function requireApiKey(req, res, next){
   const key = req.get('x-api-key') || req.query.api_key || '';
@@ -30,28 +35,9 @@ function requireApiKey(req, res, next){
   next();
 }
 
-if (!SHOP || !TOKEN) {
-  console.warn('Warning: SHOP or TOKEN missing - API calls will fail until env vars are set.');
-}
-
-  // Otherwise fall back to API key header or query param
-  const key = req.get('x-api-key') || req.query.api_key || '';
-  if (!API_KEY || key !== API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized - invalid API key' });
-  }
-  next();
-}
-
-// Apply auth middleware globally BEFORE static files / routes.
-// This is the critical line — ensures the browser will prompt for Basic Auth on page load.
-app.use(basicAuthOrApiKey);
-
-// Serve static frontend after auth middleware
-app.use(express.static('public'));
-
-// ------------------------------
-// Helpers
-// ------------------------------
+/* ------------------------------
+   Helper: GraphQL call
+   ------------------------------ */
 async function shopifyGraphQL(query, variables = {}) {
   if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
   const url = `https://${SHOP}/admin/api/2025-07/graphql.json`;
@@ -68,6 +54,9 @@ async function shopifyGraphQL(query, variables = {}) {
   return json;
 }
 
+/* ------------------------------
+   Utility: extract utm fields from urls and attributes
+   ------------------------------ */
 function extractUtmFromUrl(urlString){
   const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
   if (!urlString) return out;
@@ -129,63 +118,12 @@ function mapOrderNodeToRow(node){
   };
 }
 
-// REST fallback: fetch orders via REST with Link header pagination, capped by maxResults
-async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2000){
-  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
-  let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-  const mapped = [];
-  while (url) {
-    const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept':'application/json' } });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error('Shopify API error: ' + resp.status + ' - ' + text);
-    }
-    const data = await resp.json();
-    if (data && data.orders) {
-      for (const o of data.orders) {
-        mapped.push({
-          id: o.id,
-          order_number: o.order_number || o.name || '',
-          created_at: o.created_at,
-          ...Object.assign({}, extractUtmFromUrl(o.landing_site), extractUtmFromAttributes(o.note_attributes || o.attributes))
-        });
-        if (mapped.length >= maxResults) break;
-      }
-    }
-    if (mapped.length >= maxResults) break;
-    const link = resp.headers.get('link');
-    if (link && link.includes('rel="next"')) {
-      const m = link.match(/<([^>]+)>; rel="next"/);
-      url = m ? m[1] : null;
-    } else {
-      url = null;
-    }
-  }
-  return mapped;
-}
-
-// Helper: count orders for a date range using Shopify count endpoint
-async function fetchOrdersCount(created_at_min, created_at_max){
-  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
-  const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-  const r = await fetch(countUrl, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept': 'application/json' } });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error('Shopify count error: ' + r.status + ' - ' + t);
-  }
-  const j = await r.json();
-  return j.count || 0;
-}
-
-// ------------------------------
-// Routes (no per-route auth param necessary because middleware applied globally)
-// ------------------------------
-
-/* 1) Start Bulk Operation
+/* ------------------------------
+   1) Start Bulk Operation
    POST /api/bulk/start
-   body params (JSON or query): start, end (YYYY-MM-DD)
-*/
-app.post('/api/bulk/start', async (req, res) => {
+   protected by requireApiKey
+   ------------------------------ */
+app.post('/api/bulk/start', requireApiKey, async (req, res) => {
   try {
     const start = (req.body && req.body.start) || req.query.start;
     const end = (req.body && req.body.end) || req.query.end;
@@ -238,10 +176,12 @@ app.post('/api/bulk/start', async (req, res) => {
   }
 });
 
-/* 2) Check bulk status
+/* ------------------------------
+   2) Check current bulk operation status
    GET /api/bulk/status
-*/
-app.get('/api/bulk/status', async (req, res) => {
+   protected by requireApiKey
+   ------------------------------ */
+app.get('/api/bulk/status', requireApiKey, async (req, res) => {
   try {
     const q = `{ currentBulkOperation { id status errorCode url objectCount } }`;
     const j = await shopifyGraphQL(q);
@@ -253,10 +193,12 @@ app.get('/api/bulk/status', async (req, res) => {
   }
 });
 
-/* 3) Download / parse bulk export and return CSV
-   GET /api/bulk/download?preview=50
-*/
-app.get('/api/bulk/download', async (req, res) => {
+/* ------------------------------
+   3) Download / parse bulk export and return CSV
+   GET /api/bulk/download
+   protected by requireApiKey
+   ------------------------------ */
+app.get('/api/bulk/download', requireApiKey, async (req, res) => {
   try {
     const preview = req.query.preview ? parseInt(req.query.preview, 10) : 0;
     const q = `{ currentBulkOperation { id status errorCode url objectCount } }`;
@@ -271,7 +213,6 @@ app.get('/api/bulk/download', async (req, res) => {
     const fetchRes = await fetch(url);
     if (!fetchRes.ok) throw new Error('Failed to download bulk file: ' + fetchRes.status);
 
-    // gzipped stream -> gunzip -> readline
     const gzStream = fetchRes.body;
     const gunzip = zlib.createGunzip();
     stream.pipeline(gzStream, gunzip, (err) => { if (err) console.error('Pipeline error', err); });
@@ -319,10 +260,60 @@ app.get('/api/bulk/download', async (req, res) => {
   }
 });
 
-/* 4) REST fallback: /api/orders ?start=YYYY-MM-DD&end=YYYY-MM-DD&page=&pageSize=&max=
-   Returns: { total_fetched, page, pageSize, orders, shopify_total }
-*/
-app.get('/api/orders', async (req, res) => {
+/* ------------------------------
+   (Optional) REST fallback for small ranges
+   GET /api/orders?start=&end=&page=&pageSize=&max=
+   protected by requireApiKey
+   ------------------------------ */
+async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2000){
+  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
+  let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+  const mapped = [];
+  while (url) {
+    const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept':'application/json' } });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error('Shopify API error: ' + resp.status + ' - ' + text);
+    }
+    const data = await resp.json();
+    if (data && data.orders) {
+      for (const o of data.orders) {
+        mapped.push({
+          id: o.id,
+          order_number: o.order_number || o.name || '',
+          created_at: o.created_at,
+          ...Object.assign({}, extractUtmFromUrl(o.landing_site), extractUtmFromAttributes(o.note_attributes || o.attributes))
+        });
+        if (mapped.length >= maxResults) break;
+      }
+    }
+    if (mapped.length >= maxResults) break;
+    const link = resp.headers.get('link');
+    if (link && link.includes('rel="next"')) {
+      const m = link.match(/<([^>]+)>; rel="next"/);
+      url = m ? m[1] : null;
+    } else {
+      url = null;
+    }
+  }
+  return mapped;
+}
+
+// Helper: count orders for a date range using Shopify count endpoint
+async function fetchOrdersCount(created_at_min, created_at_max){
+  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
+  const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+  const r = await fetch(countUrl, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept': 'application/json' } });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error('Shopify count error: ' + r.status + ' - ' + t);
+  }
+  const j = await r.json();
+  return j.count || 0;
+}
+
+/* Replace your existing /api/orders handler */
+app.get('/api/orders', requireApiKey, async (req, res) => {
   try {
     const { start, end, page = '1', pageSize = '100', max } = req.query;
     if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
@@ -360,10 +351,8 @@ app.get('/api/orders', async (req, res) => {
   }
 });
 
-/* 5) Export CSV endpoint (REST fallback) - supports useBulk=1 redirect
-   GET /api/export.csv?start=...&end=...&useBulk=1&preview=50
-*/
-app.get('/api/export.csv', async (req, res) => {
+/* Export CSV endpoint. Supports REST fallback and optional bulk redirect. */
+app.get('/api/export.csv', requireApiKey, async (req, res) => {
   try {
     const { start, end, useBulk = '0', preview = '0' } = req.query;
     if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
@@ -404,9 +393,14 @@ app.get('/api/export.csv', async (req, res) => {
   }
 });
 
-// fallback to serve index.html for root (auth already applied globally)
+// fallback to serve index.html for root (static already served from /public)
 app.get('/', (req, res) => res.sendFile(__dirname + '/public/index.html'));
 
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('Server listening on', PORT));
+
+// --- helper used earlier but declared after routes for readability
+async function shopifyGraphQLWrapper(query, variables = {}) {
+  return shopifyGraphQL(query, variables);
+}
