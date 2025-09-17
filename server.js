@@ -1,7 +1,6 @@
-// server.js - Shopify Bulk Operations + REST fallback
-// Paste this entire file over your existing server.js (or replace the file).
+// server.js - Shopify Bulk Operations + REST fallback (with Basic Auth middleware applied globally)
 // Required packages: express, node-fetch@2, cors, csv-stringify
-// Ensure your package.json has these deps and you run `npm install`.
+// Make sure package.json includes those deps and run `npm install`.
 
 const express = require('express');
 const fetch = require('node-fetch'); // v2
@@ -10,32 +9,38 @@ const { URL } = require('url');
 const zlib = require('zlib');
 const readline = require('readline');
 const stream = require('stream');
-const stringify = require('csv-stringify').stringify;
 
 const app = express();
 app.use(cors());
-app.use(express.static('public'));
+// parse JSON bodies for POST endpoints
+app.use(express.json());
 
 // ENV vars
 const SHOP = process.env.SHOPIFY_STORE; // e.g. your-store.myshopify.com
 const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN; // Admin API token
 const API_KEY = process.env.API_KEY || 'dev_key';
-// Add this helper near the other middleware in server.js
 
+// -------------------------
+// Basic Auth or API Key middleware
+// -------------------------
 function basicAuthOrApiKey(req, res, next){
-  // If BASIC_AUTH_USER is configured, prefer Basic Auth
+  // If DISABLE_API_KEY=1, allow through immediately (useful for quick testing)
+  if (process.env.DISABLE_API_KEY === '1') return next();
+
+  // If BASIC_AUTH_USER and BASIC_AUTH_PASS are configured, require Basic Auth
   const BASIC_USER = process.env.BASIC_AUTH_USER;
   const BASIC_PASS = process.env.BASIC_AUTH_PASS;
 
   if (BASIC_USER && BASIC_PASS) {
     const auth = req.get('authorization') || '';
     if (!auth.startsWith('Basic ')) {
+      // Prompt browser for credentials
       res.setHeader('WWW-Authenticate', 'Basic realm="Restricted"');
       return res.status(401).send('Authentication required.');
     }
     const b64 = auth.slice(6);
     let decoded = '';
-    try { decoded = Buffer.from(b64, 'base64').toString('utf8'); } catch (e) { }
+    try { decoded = Buffer.from(b64, 'base64').toString('utf8'); } catch (e) { /* ignore */ }
     const [user, pass] = decoded.split(':');
     if (user === BASIC_USER && pass === BASIC_PASS) {
       return next();
@@ -44,20 +49,26 @@ function basicAuthOrApiKey(req, res, next){
     return res.status(401).send('Invalid credentials.');
   }
 
-  // If Basic Auth not configured, fall back to existing API_KEY behavior
+  // Otherwise fall back to API key header or query param
   const key = req.get('x-api-key') || req.query.api_key || '';
-  if (process.env.DISABLE_API_KEY === '1') return next();
   if (!API_KEY || key !== API_KEY) {
     return res.status(401).json({ error: 'Unauthorized - invalid API key' });
   }
   next();
 }
 
+// Apply auth middleware globally BEFORE static files / routes.
+// This is the critical line — ensures the browser will prompt for Basic Auth on page load.
+app.use(basicAuthOrApiKey);
 
-/* ------------------------------
-   Helper: GraphQL call
-   ------------------------------ */
+// Serve static frontend after auth middleware
+app.use(express.static('public'));
+
+// ------------------------------
+// Helpers
+// ------------------------------
 async function shopifyGraphQL(query, variables = {}) {
+  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
   const url = `https://${SHOP}/admin/api/2025-07/graphql.json`;
   const res = await fetch(url, {
     method: 'POST',
@@ -72,25 +83,132 @@ async function shopifyGraphQL(query, variables = {}) {
   return json;
 }
 
-/* ------------------------------
-   1) Start Bulk Operation
+function extractUtmFromUrl(urlString){
+  const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
+  if (!urlString) return out;
+  try {
+    const base = urlString.startsWith('http') ? urlString : 'https://' + (SHOP || 'example.com') + urlString;
+    const u = new URL(base);
+    for (const [k,v] of u.searchParams.entries()){
+      if (k.startsWith('utm_')) out[k] = v;
+    }
+  } catch (e){}
+  return out;
+}
+function extractUtmFromAttributes(attrs){
+  const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
+  if (!attrs) return out;
+  if (Array.isArray(attrs)){
+    for (const a of attrs){
+      const n = (a.name || a.key || '').toLowerCase();
+      const v = a.value ? String(a.value) : '';
+      if (!v) continue;
+      if (n.includes('utm_source')) out.utm_source = out.utm_source || v;
+      if (n.includes('utm_medium')) out.utm_medium = out.utm_medium || v;
+      if (n.includes('utm_campaign')) out.utm_campaign = out.utm_campaign || v;
+      if (n.includes('utm_term')) out.utm_term = out.utm_term || v;
+      if (n.includes('utm_content')) out.utm_content = out.utm_content || v;
+    }
+  } else if (typeof attrs === 'object'){
+    for (const k of Object.keys(attrs)){
+      const n = k.toLowerCase();
+      const v = String(attrs[k] || '');
+      if (!v) continue;
+      if (n.includes('utm_source')) out.utm_source = out.utm_source || v;
+      if (n.includes('utm_medium')) out.utm_medium = out.utm_medium || v;
+      if (n.includes('utm_campaign')) out.utm_campaign = out.utm_campaign || v;
+      if (n.includes('utm_term')) out.utm_term = out.utm_term || v;
+      if (n.includes('utm_content')) out.utm_content = out.utm_content || v;
+    }
+  }
+  return out;
+}
+function mapOrderNodeToRow(node){
+  const landing = node.landingSite || node.landing_site || node.landingSiteUrl || '';
+  const referring = node.referringSite || node.referring_site || '';
+  const landingU = extractUtmFromUrl(landing);
+  const referringU = extractUtmFromUrl(referring);
+  const noteU = extractUtmFromAttributes(node.noteAttributes || node.note_attributes || node.attributes || node.attrs);
+  const utm = {
+    utm_source: landingU.utm_source || referringU.utm_source || noteU.utm_source || '',
+    utm_medium: landingU.utm_medium || referringU.utm_medium || noteU.utm_medium || '',
+    utm_campaign: landingU.utm_campaign || referringU.utm_campaign || noteU.utm_campaign || '',
+    utm_term: landingU.utm_term || referringU.utm_term || noteU.utm_term || '',
+    utm_content: landingU.utm_content || referringU.utm_content || noteU.utm_content || ''
+  };
+  return {
+    id: node.id || '',
+    order_number: node.order_number || node.orderNumber || node.name || '',
+    created_at: node.createdAt || node.created_at || '',
+    ...utm
+  };
+}
+
+// REST fallback: fetch orders via REST with Link header pagination, capped by maxResults
+async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2000){
+  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
+  let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+  const mapped = [];
+  while (url) {
+    const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept':'application/json' } });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error('Shopify API error: ' + resp.status + ' - ' + text);
+    }
+    const data = await resp.json();
+    if (data && data.orders) {
+      for (const o of data.orders) {
+        mapped.push({
+          id: o.id,
+          order_number: o.order_number || o.name || '',
+          created_at: o.created_at,
+          ...Object.assign({}, extractUtmFromUrl(o.landing_site), extractUtmFromAttributes(o.note_attributes || o.attributes))
+        });
+        if (mapped.length >= maxResults) break;
+      }
+    }
+    if (mapped.length >= maxResults) break;
+    const link = resp.headers.get('link');
+    if (link && link.includes('rel="next"')) {
+      const m = link.match(/<([^>]+)>; rel="next"/);
+      url = m ? m[1] : null;
+    } else {
+      url = null;
+    }
+  }
+  return mapped;
+}
+
+// Helper: count orders for a date range using Shopify count endpoint
+async function fetchOrdersCount(created_at_min, created_at_max){
+  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
+  const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+  const r = await fetch(countUrl, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept': 'application/json' } });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error('Shopify count error: ' + r.status + ' - ' + t);
+  }
+  const j = await r.json();
+  return j.count || 0;
+}
+
+// ------------------------------
+// Routes (no per-route auth param necessary because middleware applied globally)
+// ------------------------------
+
+/* 1) Start Bulk Operation
    POST /api/bulk/start
-   body params (as query or JSON):
-     - start (YYYY-MM-DD)
-     - end   (YYYY-MM-DD)
-   response: { started: true, id: 'gid://shopify/BulkOperation/123', message }
-   ------------------------------ */
-app.post('/api/bulk/start', requireApiKey, express.json(), async (req, res) => {
+   body params (JSON or query): start, end (YYYY-MM-DD)
+*/
+app.post('/api/bulk/start', async (req, res) => {
   try {
     const start = (req.body && req.body.start) || req.query.start;
     const end = (req.body && req.body.end) || req.query.end;
     if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
 
-    // ISO datetimes for shopify query
     const startISO = new Date(start + 'T00:00:00Z').toISOString();
     const endISO = new Date(end + 'T23:59:59Z').toISOString();
 
-    // Build GraphQL bulkOperation query: gather fields we care about.
     const bulkQuery = `
       mutation {
         bulkOperationRunQuery(
@@ -135,12 +253,10 @@ app.post('/api/bulk/start', requireApiKey, express.json(), async (req, res) => {
   }
 });
 
-/* ------------------------------
-   2) Check current bulk operation status
+/* 2) Check bulk status
    GET /api/bulk/status
-   response: { status, url, objectCount, id, errorCode }
-   ------------------------------ */
-app.get('/api/bulk/status', requireApiKey, async (req, res) => {
+*/
+app.get('/api/bulk/status', async (req, res) => {
   try {
     const q = `{ currentBulkOperation { id status errorCode url objectCount } }`;
     const j = await shopifyGraphQL(q);
@@ -152,82 +268,12 @@ app.get('/api/bulk/status', requireApiKey, async (req, res) => {
   }
 });
 
-/* ------------------------------
-   Utility: extract utm fields from urls and attributes
-   ------------------------------ */
-function extractUtmFromUrl(urlString){
-  const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
-  if (!urlString) return out;
-  try {
-    const base = urlString.startsWith('http') ? urlString : 'https://' + (SHOP || 'example.com') + urlString;
-    const u = new URL(base);
-    for (const [k,v] of u.searchParams.entries()){
-      if (k.startsWith('utm_')) out[k] = v;
-    }
-  } catch (e){}
-  return out;
-}
-function extractUtmFromAttributes(attrs){
-  const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
-  if (!attrs) return out;
-  if (Array.isArray(attrs)){
-    for (const a of attrs){
-      const n = (a.name || a.key || '').toLowerCase();
-      const v = a.value ? String(a.value) : '';
-      if (!v) continue;
-      if (n.includes('utm_source')) out.utm_source = out.utm_source || v;
-      if (n.includes('utm_medium')) out.utm_medium = out.utm_medium || v;
-      if (n.includes('utm_campaign')) out.utm_campaign = out.utm_campaign || v;
-      if (n.includes('utm_term')) out.utm_term = out.utm_term || v;
-      if (n.includes('utm_content')) out.utm_content = out.utm_content || v;
-    }
-  } else if (typeof attrs === 'object'){
-    for (const k of Object.keys(attrs)){
-      const n = k.toLowerCase();
-      const v = String(attrs[k] || '');
-      if (!v) continue;
-      if (n.includes('utm_source')) out.utm_source = out.utm_source || v;
-      if (n.includes('utm_medium')) out.utm_medium = out.utm_medium || v;
-      if (n.includes('utm_campaign')) out.utm_campaign = out.utm_campaign || v;
-      if (n.includes('utm_term')) out.utm_term = out.utm_term || v;
-      if (n.includes('utm_content')) out.utm_content = out.utm_content || v;
-    }
-  }
-  return out;
-}
-function mapOrderNodeToRow(node){
-  // node fields from bulk file may be nested; adapt defensively
-  const landing = node.landingSite || node.landing_site || node.landingSiteUrl || '';
-  const referring = node.referringSite || node.referring_site || '';
-  const landingU = extractUtmFromUrl(landing);
-  const referringU = extractUtmFromUrl(referring);
-  const noteU = extractUtmFromAttributes(node.noteAttributes || node.note_attributes || node.attributes || node.attrs);
-  const utm = {
-    utm_source: landingU.utm_source || referringU.utm_source || noteU.utm_source || '',
-    utm_medium: landingU.utm_medium || referringU.utm_medium || noteU.utm_medium || '',
-    utm_campaign: landingU.utm_campaign || referringU.utm_campaign || noteU.utm_campaign || '',
-    utm_term: landingU.utm_term || referringU.utm_term || noteU.utm_term || '',
-    utm_content: landingU.utm_content || referringU.utm_content || noteU.utm_content || ''
-  };
-  return {
-    id: node.id || '',
-    order_number: node.order_number || node.orderNumber || node.name || '',
-    created_at: node.createdAt || node.created_at || '',
-    ...utm
-  };
-}
-
-/* ------------------------------
-   3) Download / parse bulk export and return CSV
-   GET /api/bulk/download
-   Query params:
-     - preview (optional) - if provided returns only first N rows
-   Returns: CSV download (Content-Type: text/csv)
-   ------------------------------ */
-app.get('/api/bulk/download', requireApiKey, async (req, res) => {
+/* 3) Download / parse bulk export and return CSV
+   GET /api/bulk/download?preview=50
+*/
+app.get('/api/bulk/download', async (req, res) => {
   try {
     const preview = req.query.preview ? parseInt(req.query.preview, 10) : 0;
-    // 1) get current bulk operation url
     const q = `{ currentBulkOperation { id status errorCode url objectCount } }`;
     const j = await shopifyGraphQL(q);
     const op = j.data.currentBulkOperation;
@@ -237,47 +283,28 @@ app.get('/api/bulk/download', requireApiKey, async (req, res) => {
     const url = op.url;
     if (!url) return res.status(500).json({ error: 'Bulk operation completed but no URL returned.' });
 
-    // 2) download the .jsonl.gz and stream-decompress + parse lines
     const fetchRes = await fetch(url);
     if (!fetchRes.ok) throw new Error('Failed to download bulk file: ' + fetchRes.status);
 
-    // Response body is a stream of gzipped bytes
+    // gzipped stream -> gunzip -> readline
     const gzStream = fetchRes.body;
     const gunzip = zlib.createGunzip();
+    stream.pipeline(gzStream, gunzip, (err) => { if (err) console.error('Pipeline error', err); });
 
-    // pipe through gunzip
-    const decompressed = stream.pipeline(gzStream, gunzip, (err) => {
-      if (err) console.error('Pipeline error', err);
-    });
-
-    // Read line by line from the decompressed stream
     const rl = readline.createInterface({ input: gunzip });
 
-    // Stream CSV directly to response to avoid buffering everything
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="shopify-bulk-utm.csv"');
 
-    // Define CSV columns
     const columns = ['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
-
-    // Write CSV header
-    res.write(columns.join(',') + '\\n');
+    res.write(columns.join(',') + '\n');
 
     let count = 0;
     for await (const line of rl) {
       if (!line || !line.trim()) continue;
-      // Each line is a JSON object representing top-level item (Shopify bulk returns objects with order fields)
-      // The bulk file often contains wrapped objects; try to extract order node safely.
       let parsed;
-      try {
-        parsed = JSON.parse(line);
-      } catch (e) {
-        // ignore lines that fail to parse
-        continue;
-      }
+      try { parsed = JSON.parse(line); } catch (e) { continue; }
 
-      // Shopify bulk usually returns objects shaped like { orders: { edges: [ { node: {...} } ] } } or plain node objects.
-      // We handle both: if top-level has orders, iterate its edges; otherwise, treat parsed as node-like.
       let rows = [];
       if (parsed && parsed.orders && parsed.orders.edges) {
         for (const edge of parsed.orders.edges) {
@@ -286,25 +313,20 @@ app.get('/api/bulk/download', requireApiKey, async (req, res) => {
       } else if (parsed && parsed.node) {
         rows.push(mapOrderNodeToRow(parsed.node));
       } else {
-        // sometimes the node is directly the object
         rows.push(mapOrderNodeToRow(parsed));
       }
 
-      // Convert rows to CSV lines and write
       for (const r of rows) {
         const lineArr = columns.map(k => {
           const v = r[k] === null || r[k] === undefined ? '' : String(r[k]);
-          // escape quotes
           return '"' + v.replace(/"/g, '""') + '"';
         });
-        res.write(lineArr.join(',') + '\\n');
+        res.write(lineArr.join(',') + '\n');
         count++;
         if (preview && count >= preview) break;
       }
       if (preview && count >= preview) break;
     }
-
-    // finalize response
     res.end();
   } catch (err) {
     console.error('bulk/download error', err);
@@ -312,46 +334,10 @@ app.get('/api/bulk/download', requireApiKey, async (req, res) => {
   }
 });
 
-/* ------------------------------
-   (Optional) Keep a small REST fallback for small ranges
-   GET /api/orders?start=&end=&page=&pageSize=
-   ------------------------------ */
-async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2000){
-  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
-  let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-  const mapped = [];
-  while (url) {
-    const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept':'application/json' } });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error('Shopify API error: ' + resp.status + ' - ' + text);
-    }
-    const data = await resp.json();
-    if (data && data.orders) {
-      for (const o of data.orders) {
-        mapped.push({
-          id: o.id,
-          order_number: o.order_number || o.name || '',
-          created_at: o.created_at,
-          ...Object.assign({}, extractUtmFromUrl(o.landing_site), extractUtmFromAttributes(o.note_attributes || o.attributes))
-        });
-        if (mapped.length >= maxResults) break;
-      }
-    }
-    if (mapped.length >= maxResults) break;
-    const link = resp.headers.get('link');
-    if (link && link.includes('rel="next"')) {
-      const m = link.match(/<([^>]+)>; rel="next"/);
-      url = m ? m[1] : null;
-    } else {
-      url = null;
-    }
-  }
-  return mapped;
-}
-
-// Replace your existing /api/orders handler with this (copy/paste)
-app.get('/api/orders', requireApiKey, async (req, res) => {
+/* 4) REST fallback: /api/orders ?start=YYYY-MM-DD&end=YYYY-MM-DD&page=&pageSize=&max=
+   Returns: { total_fetched, page, pageSize, orders, shopify_total }
+*/
+app.get('/api/orders', async (req, res) => {
   try {
     const { start, end, page = '1', pageSize = '100', max } = req.query;
     if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
@@ -359,91 +345,62 @@ app.get('/api/orders', requireApiKey, async (req, res) => {
     const created_at_min = new Date(start + 'T00:00:00Z').toISOString();
     const created_at_max = new Date(end + 'T23:59:59Z').toISOString();
 
-    // 1) Ask Shopify for the TRUE number of orders in this date range (cheap endpoint)
-    async function fetchOrdersCount(created_at_min, created_at_max){
-      const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-      const r = await fetch(countUrl, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept': 'application/json' } });
-      if (!r.ok) {
-        const t = await r.text();
-        throw new Error('Shopify count error: ' + r.status + ' - ' + t);
-      }
-      const j = await r.json();
-      return j.count || 0;
-    }
-
-    // 2) Fetch rows (REST fallback already implemented in your file)
     const MAX = parseInt(max || process.env.MAX_RESULTS || '2000', 10);
     const createdRows = await fetchAllOrdersREST(created_at_min, created_at_max, MAX);
 
-    // 3) Get the shopify_total from the count endpoint
-    let shopifyTotal = 0;
+    let shopifyTotal = null;
     try {
       shopifyTotal = await fetchOrdersCount(created_at_min, created_at_max);
     } catch (e) {
       console.warn('Could not fetch shopify count:', e.message);
-      shopifyTotal = null; // null indicates we couldn't fetch the total
+      shopifyTotal = null;
     }
 
-    // server-side sort & paginate the fetched rows
     createdRows.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
     const p = Math.max(1, parseInt(page,10));
     const ps = Math.max(1, Math.min(1000, parseInt(pageSize,10)));
     const startIdx = (p-1)*ps;
     const pageRows = createdRows.slice(startIdx, startIdx + ps);
 
-    // Return both the fetched total (rows you returned) and the true shopify total
     res.json({
-      total_fetched: createdRows.length,   // how many rows server fetched (may be capped)
+      total_fetched: createdRows.length,
       page: p,
       pageSize: ps,
       orders: pageRows,
-      shopify_total: shopifyTotal         // the real total count from Shopify (or null if error)
+      shopify_total: shopifyTotal
     });
-
   } catch (err) {
     console.error('/api/orders error', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// === ADD THIS ROUTE TO server.js ===
-// Export CSV endpoint. Supports REST fallback (default) and optional bulk download redirect.
-app.get('/api/export.csv', requireApiKey, async (req, res) => {
+/* 5) Export CSV endpoint (REST fallback) - supports useBulk=1 redirect
+   GET /api/export.csv?start=...&end=...&useBulk=1&preview=50
+*/
+app.get('/api/export.csv', async (req, res) => {
   try {
     const { start, end, useBulk = '0', preview = '0' } = req.query;
     if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
 
-    // If caller requests bulk mode, point them to bulk.download if ready
     if (useBulk === '1') {
-      // Check current bulk status
       const q = `{ currentBulkOperation { id status errorCode url objectCount } }`;
       const statusResp = await shopifyGraphQL(q);
       const op = statusResp.data.currentBulkOperation;
       if (!op) return res.status(400).json({ error: 'No bulk operation found. Start one with /api/bulk/start' });
       if (op.status !== 'COMPLETED') return res.status(400).json({ error: 'Bulk not ready. Status: ' + op.status });
-      // Redirect to bulk download which streams CSV
-      return res.redirect(303, '/api/bulk/download?preview=' + encodeURIComponent(preview || '0') + '&api_key=' + encodeURIComponent(req.query.api_key || ''));
+      return res.redirect(303, '/api/bulk/download?preview=' + encodeURIComponent(preview || '0'));
     }
 
-    // REST fallback: fetch (capped) orders via REST and stream CSV.
     const created_at_min = new Date(start + 'T00:00:00Z').toISOString();
     const created_at_max = new Date(end + 'T23:59:59Z').toISOString();
-
-    // Use MAX_RESULTS env or default (to avoid huge downloads)
     const MAX = parseInt(process.env.MAX_RESULTS || '5000', 10);
-
-    // fetchAllOrdersREST exists in this server.js (from the bulk implementation)
     const rows = await fetchAllOrdersREST(created_at_min, created_at_max, MAX);
 
-    // columns
     const columns = ['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
-
-    // stream CSV
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="shopify-utm-export.csv"');
-
-    // write header
-    res.write(columns.join(',') + '\\n');
+    res.write(columns.join(',') + '\n');
 
     let count = 0;
     for (const r of rows) {
@@ -451,9 +408,8 @@ app.get('/api/export.csv', requireApiKey, async (req, res) => {
         const v = r[k] === null || r[k] === undefined ? '' : String(r[k]);
         return '"' + v.replace(/"/g, '""') + '"';
       }).join(',');
-      res.write(line + '\\n');
+      res.write(line + '\n');
       count++;
-      // if preview param provided, stop early
       if (parseInt(preview, 10) && count >= parseInt(preview, 10)) break;
     }
     res.end();
@@ -463,8 +419,9 @@ app.get('/api/export.csv', requireApiKey, async (req, res) => {
   }
 });
 
-
+// fallback to serve index.html for root (auth already applied globally)
 app.get('/', (req, res) => res.sendFile(__dirname + '/public/index.html'));
 
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('Server listening on', PORT));
