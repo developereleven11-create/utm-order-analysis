@@ -1,5 +1,6 @@
-// server.js - Shopify Bulk Operations + REST fallback (API-key auth only)
-// Required packages: express, node-fetch@2, cors, csv-stringify (optional for other flows)
+// server.js - Shopify UTM Orders Dashboard (API-key auth only)
+// Changes: created_at is formatted to IST (YYYY-MM-DD HH:mm:ss), order_number prefers full `name` value
+// Required packages: express, node-fetch@2, cors
 // Ensure package.json has these deps and run `npm install`.
 
 const express = require('express');
@@ -14,7 +15,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Serve frontend (unprotected) from /public
+// Serve frontend (unprotected)
 app.use(express.static('public'));
 
 // ENV vars
@@ -26,7 +27,7 @@ if (!SHOP || !TOKEN) {
   console.warn('Warning: SHOP or TOKEN missing - API calls will fail until env vars are set.');
 }
 
-// Basic auth middleware (x-api-key)
+// API-key middleware
 function requireApiKey(req, res, next){
   const key = req.get('x-api-key') || req.query.api_key || '';
   if (!API_KEY || key !== API_KEY){
@@ -36,7 +37,7 @@ function requireApiKey(req, res, next){
 }
 
 /* ------------------------------
-   Helper: GraphQL call
+   Helpers
    ------------------------------ */
 async function shopifyGraphQL(query, variables = {}) {
   if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
@@ -54,9 +55,24 @@ async function shopifyGraphQL(query, variables = {}) {
   return json;
 }
 
-/* ------------------------------
-   Utility: extract utm fields from urls and attributes
-   ------------------------------ */
+// Format ISO date into IST 'YYYY-MM-DD HH:mm:ss'
+function formatDateToIST(isoString){
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '';
+  // IST = UTC + 5.5 hours = 330 minutes
+  const istMs = d.getTime() + (330 * 60 * 1000);
+  const ist = new Date(istMs);
+  const pad = (n) => String(n).padStart(2, '0');
+  const YYYY = ist.getUTCFullYear();
+  const MM = pad(ist.getUTCMonth() + 1);
+  const DD = pad(ist.getUTCDate());
+  const hh = pad(ist.getUTCHours());
+  const mm = pad(ist.getUTCMinutes());
+  const ss = pad(ist.getUTCSeconds());
+  return `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
+}
+
 function extractUtmFromUrl(urlString){
   const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
   if (!urlString) return out;
@@ -97,8 +113,10 @@ function extractUtmFromAttributes(attrs){
   }
   return out;
 }
+
+// map a node (from bulk GraphQL) to a row — uses full name for order number and IST formatted created_at
 function mapOrderNodeToRow(node){
-  const landing = node.landingSite || node.landing_site || node.landingSiteUrl || '';
+  const landing = node.landingSite || node.landing_site || '';
   const referring = node.referringSite || node.referring_site || '';
   const landingU = extractUtmFromUrl(landing);
   const referringU = extractUtmFromUrl(referring);
@@ -110,19 +128,83 @@ function mapOrderNodeToRow(node){
     utm_term: landingU.utm_term || referringU.utm_term || noteU.utm_term || '',
     utm_content: landingU.utm_content || referringU.utm_content || noteU.utm_content || ''
   };
+
+  // Prefer `name` (Shopify order name like "#1001") to get the visible order number; fall back to other fields.
+  const rawName = (node.name || node.order_number || node.orderNumber || '') + '';
+  const orderNumberFull = rawName;
+
+  // created_at: convert to IST formatted string
+  const createdAtRaw = node.createdAt || node.created_at || '';
+  const createdAtIST = formatDateToIST(createdAtRaw);
+
   return {
     id: node.id || '',
-    order_number: node.order_number || node.orderNumber || node.name || '',
-    created_at: node.createdAt || node.created_at || '',
+    order_number: orderNumberFull,
+    created_at: createdAtIST,
+    created_at_raw: createdAtRaw,
     ...utm
   };
 }
 
 /* ------------------------------
-   1) Start Bulk Operation
-   POST /api/bulk/start
-   protected by requireApiKey
+   REST fallback: fetch orders via REST with Link header pagination, capped by maxResults
+   (maps created_at to IST and uses full name for order number)
    ------------------------------ */
+async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2000){
+  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
+  let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+  const mapped = [];
+  while (url) {
+    const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept':'application/json' } });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error('Shopify API error: ' + resp.status + ' - ' + text);
+    }
+    const data = await resp.json();
+    if (data && data.orders) {
+      for (const o of data.orders) {
+        const rawName = (o.name || o.order_number || '') + '';
+        const createdAtRaw = o.created_at || '';
+        mapped.push({
+          id: o.id,
+          order_number: rawName,
+          created_at: formatDateToIST(createdAtRaw),
+          created_at_raw: createdAtRaw,
+          ...Object.assign({}, extractUtmFromUrl(o.landing_site), extractUtmFromAttributes(o.note_attributes || o.attributes))
+        });
+        if (mapped.length >= maxResults) break;
+      }
+    }
+    if (mapped.length >= maxResults) break;
+    const link = resp.headers.get('link');
+    if (link && link.includes('rel="next"')) {
+      const m = link.match(/<([^>]+)>; rel="next"/);
+      url = m ? m[1] : null;
+    } else {
+      url = null;
+    }
+  }
+  return mapped;
+}
+
+// Helper: count orders for a date range using Shopify count endpoint
+async function fetchOrdersCount(created_at_min, created_at_max){
+  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
+  const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+  const r = await fetch(countUrl, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept': 'application/json' } });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error('Shopify count error: ' + r.status + ' - ' + t);
+  }
+  const j = await r.json();
+  return j.count || 0;
+}
+
+/* ------------------------------
+   Bulk endpoints (protected by API key)
+   ------------------------------ */
+
+/* Start bulk */
 app.post('/api/bulk/start', requireApiKey, async (req, res) => {
   try {
     const start = (req.body && req.body.start) || req.query.start;
@@ -176,11 +258,7 @@ app.post('/api/bulk/start', requireApiKey, async (req, res) => {
   }
 });
 
-/* ------------------------------
-   2) Check current bulk operation status
-   GET /api/bulk/status
-   protected by requireApiKey
-   ------------------------------ */
+/* Bulk status */
 app.get('/api/bulk/status', requireApiKey, async (req, res) => {
   try {
     const q = `{ currentBulkOperation { id status errorCode url objectCount } }`;
@@ -193,11 +271,7 @@ app.get('/api/bulk/status', requireApiKey, async (req, res) => {
   }
 });
 
-/* ------------------------------
-   3) Download / parse bulk export and return CSV
-   GET /api/bulk/download
-   protected by requireApiKey
-   ------------------------------ */
+/* Bulk download -> streams CSV (IST created_at, full order_number) */
 app.get('/api/bulk/download', requireApiKey, async (req, res) => {
   try {
     const preview = req.query.preview ? parseInt(req.query.preview, 10) : 0;
@@ -260,59 +334,7 @@ app.get('/api/bulk/download', requireApiKey, async (req, res) => {
   }
 });
 
-/* ------------------------------
-   (Optional) REST fallback for small ranges
-   GET /api/orders?start=&end=&page=&pageSize=&max=
-   protected by requireApiKey
-   ------------------------------ */
-async function fetchAllOrdersREST(created_at_min, created_at_max, maxResults = 2000){
-  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
-  let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-  const mapped = [];
-  while (url) {
-    const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept':'application/json' } });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error('Shopify API error: ' + resp.status + ' - ' + text);
-    }
-    const data = await resp.json();
-    if (data && data.orders) {
-      for (const o of data.orders) {
-        mapped.push({
-          id: o.id,
-          order_number: o.order_number || o.name || '',
-          created_at: o.created_at,
-          ...Object.assign({}, extractUtmFromUrl(o.landing_site), extractUtmFromAttributes(o.note_attributes || o.attributes))
-        });
-        if (mapped.length >= maxResults) break;
-      }
-    }
-    if (mapped.length >= maxResults) break;
-    const link = resp.headers.get('link');
-    if (link && link.includes('rel="next"')) {
-      const m = link.match(/<([^>]+)>; rel="next"/);
-      url = m ? m[1] : null;
-    } else {
-      url = null;
-    }
-  }
-  return mapped;
-}
-
-// Helper: count orders for a date range using Shopify count endpoint
-async function fetchOrdersCount(created_at_min, created_at_max){
-  if (!SHOP || !TOKEN) throw new Error('Missing SHOP or TOKEN env vars');
-  const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-  const r = await fetch(countUrl, { headers: { 'X-Shopify-Access-Token': TOKEN, 'Accept': 'application/json' } });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error('Shopify count error: ' + r.status + ' - ' + t);
-  }
-  const j = await r.json();
-  return j.count || 0;
-}
-
-/* Replace your existing /api/orders handler */
+/* REST orders endpoint (protected) */
 app.get('/api/orders', requireApiKey, async (req, res) => {
   try {
     const { start, end, page = '1', pageSize = '100', max } = req.query;
@@ -332,7 +354,7 @@ app.get('/api/orders', requireApiKey, async (req, res) => {
       shopifyTotal = null;
     }
 
-    createdRows.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+    createdRows.sort((a,b) => new Date(b.created_at_raw || b.created_at) - new Date(a.created_at_raw || a.created_at));
     const p = Math.max(1, parseInt(page,10));
     const ps = Math.max(1, Math.min(1000, parseInt(pageSize,10)));
     const startIdx = (p-1)*ps;
@@ -351,7 +373,7 @@ app.get('/api/orders', requireApiKey, async (req, res) => {
   }
 });
 
-/* Export CSV endpoint. Supports REST fallback and optional bulk redirect. */
+/* Export CSV endpoint */
 app.get('/api/export.csv', requireApiKey, async (req, res) => {
   try {
     const { start, end, useBulk = '0', preview = '0' } = req.query;
@@ -393,14 +415,9 @@ app.get('/api/export.csv', requireApiKey, async (req, res) => {
   }
 });
 
-// fallback to serve index.html for root (static already served from /public)
+// serve index.html
 app.get('/', (req, res) => res.sendFile(__dirname + '/public/index.html'));
 
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('Server listening on', PORT));
-
-// --- helper used earlier but declared after routes for readability
-async function shopifyGraphQLWrapper(query, variables = {}) {
-  return shopifyGraphQL(query, variables);
-}
