@@ -21,33 +21,14 @@ const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN; // Admin API token
 const API_KEY = process.env.API_KEY || 'dev_key';
 
 // -------------------------
-// Basic Auth or API Key middleware
-// -------------------------
-function basicAuthOrApiKey(req, res, next){
-  // If DISABLE_API_KEY=1, allow through immediately (useful for quick testing)
-  if (process.env.DISABLE_API_KEY === '1') return next();
-
-  // If BASIC_AUTH_USER and BASIC_AUTH_PASS are configured, require Basic Auth
-  const BASIC_USER = process.env.BASIC_AUTH_USER;
-  const BASIC_PASS = process.env.BASIC_AUTH_PASS;
-
-  if (BASIC_USER && BASIC_PASS) {
-    const auth = req.get('authorization') || '';
-    if (!auth.startsWith('Basic ')) {
-      // Prompt browser for credentials
-      res.setHeader('WWW-Authenticate', 'Basic realm="Restricted"');
-      return res.status(401).send('Authentication required.');
-    }
-    const b64 = auth.slice(6);
-    let decoded = '';
-    try { decoded = Buffer.from(b64, 'base64').toString('utf8'); } catch (e) { /* ignore */ }
-    const [user, pass] = decoded.split(':');
-    if (user === BASIC_USER && pass === BASIC_PASS) {
-      return next();
-    }
-    res.setHeader('WWW-Authenticate', 'Basic realm="Restricted"');
-    return res.status(401).send('Invalid credentials.');
+// Basic auth middleware (x-api-key)
+function requireApiKey(req, res, next){
+  const key = req.get('x-api-key') || req.query.api_key || '';
+  if (!API_KEY || key !== API_KEY){
+    return res.status(401).json({ error: 'Unauthorized - invalid API key' });
   }
+  next();
+}
 
   // Otherwise fall back to API key header or query param
   const key = req.get('x-api-key') || req.query.api_key || '';
