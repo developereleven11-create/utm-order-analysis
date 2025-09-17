@@ -30,6 +30,10 @@ function requireApiKey(req, res, next){
   next();
 }
 
+if (!SHOP || !TOKEN) {
+  console.warn('Warning: SHOP or TOKEN missing - API calls will fail until env vars are set.');
+}
+
   // Otherwise fall back to API key header or query param
   const key = req.get('x-api-key') || req.query.api_key || '';
   if (!API_KEY || key !== API_KEY) {
