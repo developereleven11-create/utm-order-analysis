@@ -20,19 +20,39 @@ app.use(express.static('public'));
 const SHOP = process.env.SHOPIFY_STORE; // e.g. your-store.myshopify.com
 const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN; // Admin API token
 const API_KEY = process.env.API_KEY || 'dev_key';
+// Add this helper near the other middleware in server.js
 
-// Basic auth middleware (x-api-key)
-function requireApiKey(req, res, next){
+function basicAuthOrApiKey(req, res, next){
+  // If BASIC_AUTH_USER is configured, prefer Basic Auth
+  const BASIC_USER = process.env.BASIC_AUTH_USER;
+  const BASIC_PASS = process.env.BASIC_AUTH_PASS;
+
+  if (BASIC_USER && BASIC_PASS) {
+    const auth = req.get('authorization') || '';
+    if (!auth.startsWith('Basic ')) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="Restricted"');
+      return res.status(401).send('Authentication required.');
+    }
+    const b64 = auth.slice(6);
+    let decoded = '';
+    try { decoded = Buffer.from(b64, 'base64').toString('utf8'); } catch (e) { }
+    const [user, pass] = decoded.split(':');
+    if (user === BASIC_USER && pass === BASIC_PASS) {
+      return next();
+    }
+    res.setHeader('WWW-Authenticate', 'Basic realm="Restricted"');
+    return res.status(401).send('Invalid credentials.');
+  }
+
+  // If Basic Auth not configured, fall back to existing API_KEY behavior
   const key = req.get('x-api-key') || req.query.api_key || '';
-  if (!API_KEY || key !== API_KEY){
+  if (process.env.DISABLE_API_KEY === '1') return next();
+  if (!API_KEY || key !== API_KEY) {
     return res.status(401).json({ error: 'Unauthorized - invalid API key' });
   }
   next();
 }
 
-if (!SHOP || !TOKEN) {
-  console.warn('Warning: SHOP or TOKEN missing - API calls will fail until env vars are set.');
-}
 
 /* ------------------------------
    Helper: GraphQL call
