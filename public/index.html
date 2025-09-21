@@ -2,150 +2,395 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Shopify UTM Orders Dashboard — cleaner UI</title>
+  <title>Shopify UTM Orders — Redesigned Dashboard</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
     :root{
-      --bg:#f7fafc;
+      --bg:#0f1724;         /* page background base for accent strip */
+      --surface:#f8fafc;    /* main card background */
       --muted:#6b7280;
-      --card:#ffffff;
-      --primary:#111827;
-      --accent:#2563eb;
-      --warn-bg:#fffbeb;
-      --warn-text:#b45309;
+      --text:#0f1724;
+      --card-shadow: 0 10px 30px rgba(2,6,23,0.06);
+
+      --blue-600: #2563eb;  /* primary */
+      --blue-700: #1e40af;
+      --gray-600: #374151;  /* secondary */
+      --amber-500: #f59e0b; /* bulk color */
+      --green-600: #16a34a; /* success */
+      --danger:#ef4444;
+      --panel:#ffffff;
     }
-    body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial; padding:20px; background:var(--bg); color:#0f1724;}
-    .wrap{max-width:1200px;margin:18px auto;}
-    .card{background:var(--card);padding:18px;border-radius:12px;box-shadow:0 8px 30px rgba(15,23,42,0.06);}
-    h1{margin:0;font-size:20px;}
-    .muted{color:var(--muted);font-size:13px;margin-top:6px;}
-    .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;}
-    input[type=date], select{padding:8px;border-radius:8px;border:1px solid #e6edf3;background:white;}
-    button{padding:8px 12px;border-radius:8px;border:none;background:var(--primary);color:white;cursor:pointer;}
-    button.ghost{background:transparent;color:var(--primary);border:1px solid #e6edf3;}
-    button[disabled]{opacity:.45;cursor:not-allowed;}
-    .small{font-size:12px;color:var(--muted);}
-    .cols{display:flex;gap:6px;flex-wrap:wrap;margin-left:8px;}
-    .col-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;border:1px solid #eef2f7;}
-    .grid{display:grid;grid-template-columns:1fr 360px;gap:14px;margin-top:14px;}
-    .panel{padding:12px;border-radius:10px;background:#fbfdff;border:1px solid #eef2f7;}
-    .bulk{padding:10px;border-radius:8px;border:1px dashed #e6edf3;background:#fff;}
-    .warn{color:var(--warn-text);background:var(--warn-bg);padding:8px;border-radius:8px;border:1px solid #f3e2c8;}
-    table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px;}
-    th,td{padding:10px;border-bottom:1px solid #eef2f7;text-align:left;}
-    th{background:#fbfdff;position:sticky;top:0;}
-    .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
-    .export-menu{display:flex;flex-direction:column;gap:6px;margin-left:8px;}
-    .bottom-bar{display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:12px;flex-wrap:wrap;}
-    .stat{font-weight:600;}
-    .tiny{font-size:11px;color:var(--muted);}
+
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,#f7fafc 0%, #f1f5f9 100%);font-family:Inter,system-ui,-apple-system,'Segoe UI',Roboto,Arial;color:var(--text)}
+    .container{max-width:1200px;margin:28px auto;padding:18px;}
+    .header{display:flex;align-items:center;gap:16px;justify-content:space-between}
+    h1{margin:0;font-size:20px;font-weight:700}
+    .subtitle{color:var(--muted);font-size:13px;margin-top:6px}
+
+    .main-card{background:var(--panel);border-radius:12px;padding:18px;box-shadow:var(--card-shadow);margin-top:16px;}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    input[type=date], select{padding:8px 10px;border-radius:8px;border:1px solid #e6edf3;background:white;font-size:14px}
+    .btn{padding:9px 12px;border-radius:10px;border:0;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+    .btn-primary{background:var(--blue-600);color:white}
+    .btn-primary:hover{background:var(--blue-700)}
+    .btn-ghost{background:transparent;border:1px solid #e6edf3;color:var(--gray-600)}
+    .btn-secondary{background:#eef2ff;color:var(--blue-700);font-weight:600}
+    .btn-bulk{background:linear-gradient(90deg,#fbbf24,#f59e0b);color:#1f2937}
+    .btn-danger{background:var(--danger);color:white}
+    .btn[disabled]{opacity:0.5;cursor:not-allowed}
+
+    .grid{display:grid;grid-template-columns: 1fr 360px; gap:14px; margin-top:16px;}
+    @media (max-width:980px){ .grid{grid-template-columns: 1fr} }
+
+    .panel{background:#ffffff;border-radius:10px;padding:12px;border:1px solid #eef2f7}
+    .bulk-panel{background:linear-gradient(180deg,#fff7ed,#fffaf0);border-radius:10px;padding:12px;border:1px solid #fde3a7}
+    .muted{color:var(--muted);font-size:13px}
+
+    .stats{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:14px}
+    .stat-item{background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #eef2f7;font-weight:600}
+    .stat-label{display:block;font-size:12px;color:var(--muted);font-weight:500}
+
+    table{width:100%;border-collapse:collapse;margin-top:12px;font-size:14px;background:white}
+    th,td{padding:12px;border-bottom:1px solid #eef2f7;text-align:left}
+    th{background:#fbfdff;font-weight:600;position:sticky;top:0}
+    .table-wrap{max-height:520px;overflow:auto;border-radius:8px}
+
+    /* Export dropdown */
+    .export-dropdown{position:relative}
+    .export-button{display:flex;gap:8px;align-items:center}
+    .export-menu{position:absolute;right:0;top:44px;background:white;border:1px solid #e6edf3;border-radius:8px;padding:8px;box-shadow:var(--card-shadow);min-width:220px;z-index:50}
+    .export-menu button{display:block;width:100%;text-align:left;padding:8px;border-radius:6px;background:transparent;border:0}
+    .export-menu .hint{font-size:12px;color:var(--muted);padding:6px 8px}
+
+    /* footer controls */
+    .bottom-actions{display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:12px;flex-wrap:wrap}
+    .small{font-size:12px;color:var(--muted)}
+
+    /* column selector */
+    .cols{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .col-item{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:8px;border:1px solid #eef2f7}
+
+    /* subtle icon */
+    .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+    .dot.green{background:var(--green-600)}
+    .dot.amber{background:var(--amber-500)}
+    .tiny{font-size:11px;color:var(--muted)}
   </style>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h1>Shopify UTM Orders Dashboard</h1>
-      <div class="muted">Cleaned action layout — exports & bulk controls grouped for clarity.</div>
-
-      <div id="root"></div>
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>Shopify UTM Orders</h1>
+        <div class="subtitle">Clean, colorful controls — export & bulk grouped for clarity.</div>
+      </div>
+      <div class="tiny">Version: v2 • IST timestamps • Full order numbers</div>
     </div>
-  </div>
 
+    <div class="main-card">
+      <!-- Top controls -->
+      <div class="row controls">
+        <label>Start <input type="date" id="startDate"></label>
+        <label>End <input type="date" id="endDate"></label>
+        <label>Page size
+          <select id="pageSize">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </label>
+
+        <button id="fetchBtn" class="btn btn-primary">Fetch</button>
+
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <div class="export-dropdown" id="exportDropdownRoot">
+            <button id="exportToggle" class="btn btn-secondary export-button">Export ▾</button>
+            <!-- menu is injected by JS -->
+          </div>
+
+          <button id="topPrev" class="btn btn-ghost">Prev</button>
+          <button id="topNext" class="btn btn-ghost">Next</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat-item">
+          Shopify total
+          <div class="stat-label" id="shopifyTotal">—</div>
+        </div>
+        <div class="stat-item">
+          Rows fetched
+          <div class="stat-label" id="rowsFetched">—</div>
+        </div>
+        <div class="stat-item">
+          Page
+          <div class="stat-label" id="pageNum">—</div>
+        </div>
+        <div class="stat-item" style="display:flex;gap:8px;align-items:center">
+          <span class="dot amber"></span>
+          <div class="stat-label" id="statusText">Idle</div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <!-- LEFT: main table -->
+        <div>
+          <div style="margin-top:12px" class="small">Columns</div>
+          <div id="cols" class="cols" style="margin-top:8px"></div>
+
+          <div class="panel table-wrap" id="tableWrap">
+            <table id="dataTable">
+              <thead><tr id="theadRow"></tr></thead>
+              <tbody id="tbodyRows"></tbody>
+            </table>
+          </div>
+
+          <div class="bottom-actions">
+            <div>
+              <button id="bottomPrev" class="btn btn-ghost">Prev</button>
+              <button id="bottomNext" class="btn btn-ghost" style="margin-left:8px">Next</button>
+            </div>
+            <div>
+              <button id="exportRest" class="btn btn-primary">Export (REST)</button>
+              <button id="exportPreview" class="btn btn-ghost" style="margin-left:8px">Preview 50</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: bulk panel -->
+        <div>
+          <div class="bulk-panel">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div style="font-weight:700">Bulk Export</div>
+              <div class="tiny">recommended for large ranges</div>
+            </div>
+
+            <div style="margin-top:10px;display:flex;gap:8px">
+              <button id="startBulk" class="btn btn-bulk">Start bulk</button>
+              <button id="checkBulk" class="btn btn-ghost">Check status</button>
+            </div>
+
+            <div style="margin-top:10px;display:flex;gap:8px">
+              <button id="downloadPreview" class="btn btn-ghost">Download (preview 50)</button>
+              <button id="downloadFull" class="btn btn-ghost">Download (full)</button>
+            </div>
+
+            <div style="margin-top:12px" id="bulkInfo">
+              <div class="tiny">Status: <span id="bulkStatus">—</span></div>
+              <div class="tiny">Objects: <span id="bulkObjects">—</span></div>
+            </div>
+          </div>
+
+          <div class="panel" style="margin-top:12px">
+            <div style="font-weight:700;margin-bottom:6px">Quick tips</div>
+            <div class="tiny">
+              • For small ranges (<7 days) use Export (REST).<br>
+              • For large ranges use Bulk: Start → Check status → Download. <br>
+              • Timestamps shown in IST.
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div> <!-- main-card -->
+  </div> <!-- container -->
+
+  <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
   <script>
-    const e = React.createElement;
-    const { useState } = React;
+    // Client-side behaviour — no framework used so it's easy to paste in
+    (function(){
+      // DOM elements
+      const startEl = document.getElementById('startDate');
+      const endEl = document.getElementById('endDate');
+      const pageSizeEl = document.getElementById('pageSize');
+      const fetchBtn = document.getElementById('fetchBtn');
+      const topPrev = document.getElementById('topPrev');
+      const topNext = document.getElementById('topNext');
+      const bottomPrev = document.getElementById('bottomPrev');
+      const bottomNext = document.getElementById('bottomNext');
 
-    function humanDateRangeDays(start, end){
-      if(!start || !end) return 0;
-      const s = new Date(start + 'T00:00:00Z');
-      const eD = new Date(end + 'T23:59:59Z');
-      const diff = Math.max(0, Math.round((eD - s) / (1000*60*60*24))) + 1;
-      return diff;
-    }
+      const shopifyTotalEl = document.getElementById('shopifyTotal');
+      const rowsFetchedEl = document.getElementById('rowsFetched');
+      const pageNumEl = document.getElementById('pageNum');
+      const statusTextEl = document.getElementById('statusText');
 
-    function App(){
-      const [start,setStart] = useState('');
-      const [end,setEnd] = useState('');
-      const [orders,setOrders] = useState([]);
-      const [shopifyTotal,setShopifyTotal] = useState(null);
-      const [totalFetched,setTotalFetched] = useState(0);
-      const [page,setPage] = useState(1);
-      const [pageSize,setPageSize] = useState(50);
-      const [loading,setLoading] = useState(false);
-      const [status,setStatus] = useState('');
-      const [cols,setCols] = useState({
-        order_number:true, created_at:true,
-        utm_source:true, utm_medium:true, utm_campaign:true, utm_term:true, utm_content:true
-      });
+      const theadRow = document.getElementById('theadRow');
+      const tbodyRows = document.getElementById('tbodyRows');
+      const colsRoot = document.getElementById('cols');
+
+      const exportRestBtn = document.getElementById('exportRest');
+      const exportPreviewBtn = document.getElementById('exportPreview');
 
       // Bulk
-      const [bulkStatus,setBulkStatus] = useState(null);
-      const [bulkObjects,setBulkObjects] = useState(null);
-      const [busyBulk,setBusyBulk] = useState(false);
+      const startBulkBtn = document.getElementById('startBulk');
+      const checkBulkBtn = document.getElementById('checkBulk');
+      const downloadPreviewBtn = document.getElementById('downloadPreview');
+      const downloadFullBtn = document.getElementById('downloadFull');
+      const bulkStatusEl = document.getElementById('bulkStatus');
+      const bulkObjectsEl = document.getElementById('bulkObjects');
 
-      const colKeys = Object.keys(cols);
+      // Export dropdown
+      const exportToggle = document.getElementById('exportToggle');
+      const exportDropdownRoot = document.getElementById('exportDropdownRoot');
 
+      // state
+      let page = 1;
+      let pageSize = Number(pageSizeEl.value);
+      let orders = [];
+      let selectedCols = {
+        order_number:true, created_at:true,
+        utm_source:true, utm_medium:true, utm_campaign:true, utm_term:true, utm_content:true
+      };
+
+      // util: format columns UI
+      function renderCols(){
+        colsRoot.innerHTML = '';
+        Object.keys(selectedCols).forEach(k=>{
+          const label = document.createElement('label');
+          label.className = 'col-item';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!selectedCols[k];
+          cb.onchange = ()=>{ selectedCols[k] = cb.checked; renderTable(); renderCols(); };
+          label.appendChild(cb);
+          const text = document.createTextNode(' ' + k);
+          label.appendChild(text);
+          colsRoot.appendChild(label);
+        });
+      }
+
+      // render table header & rows
+      function renderTable(){
+        theadRow.innerHTML = '';
+        tbodyRows.innerHTML = '';
+        const cols = Object.keys(selectedCols).filter(c=>selectedCols[c]);
+        cols.forEach(c=>{
+          const th = document.createElement('th');
+          th.textContent = c;
+          theadRow.appendChild(th);
+        });
+
+        orders.forEach(r=>{
+          const tr = document.createElement('tr');
+          cols.forEach(c=>{
+            const td = document.createElement('td');
+            td.textContent = r[c] === undefined || r[c] === null ? '' : r[c];
+            tr.appendChild(td);
+          });
+          tbodyRows.appendChild(tr);
+        });
+      }
+
+      // status helpers
+      function setStatus(txt, dotColor){
+        statusTextEl.textContent = txt || '—';
+      }
+
+      // fetch page
       async function fetchPage(p=1){
-        if(!start || !end){ alert('Please select a start and end date'); return; }
-        setLoading(true); setStatus('Fetching orders...');
+        if(!startEl.value || !endEl.value){ alert('Please pick start and end dates'); return; }
+        pageSize = Number(pageSizeEl.value) || 50;
+        page = p || 1;
+        setStatus('Fetching...');
+        toggleBusy(true);
         try{
-          const resp = await axios.get('/api/orders', { params: { start, end, page: p, pageSize } });
-          const d = resp.data || {};
-          setOrders(d.orders || []);
-          setTotalFetched(d.total_fetched || 0);
-          setShopifyTotal(d.shopify_total === null ? 'unknown' : d.shopify_total);
-          setPage(d.page || p);
-          setStatus('Fetched '+ (d.orders||[]).length + ' rows.'); 
+          const resp = await axios.get('/api/orders', { params: { start: startEl.value, end: endEl.value, page, pageSize }});
+          const data = resp.data || {};
+          orders = data.orders || [];
+          shopifyTotalEl.textContent = (data.shopify_total === null ? 'unknown' : data.shopify_total);
+          rowsFetchedEl.textContent = data.total_fetched || 0;
+          pageNumEl.textContent = data.page || page;
+          setStatus('Loaded ' + (orders.length || 0) + ' rows');
+          renderTable();
         }catch(err){
           console.error(err);
           setStatus('Error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
-          setOrders([]);
-          setTotalFetched(0);
-          setShopifyTotal(null);
-        }finally{
-          setLoading(false);
-        }
+          orders = [];
+          renderTable();
+        }finally{ toggleBusy(false); }
       }
 
-      function toggleCol(k){ setCols({...cols, [k]: !cols[k]}); }
+      function toggleBusy(on){
+        [fetchBtn, exportRestBtn, exportPreviewBtn, startBulkBtn, checkBulkBtn, downloadPreviewBtn, downloadFullBtn].forEach(b=>{
+          b.disabled = on;
+        });
+        [topPrev, topNext, bottomPrev, bottomNext].forEach(b=> b.disabled = on);
+      }
 
-      // Export (REST)
+      // Export operations
       function exportRest(preview=0){
-        if(!start || !end){ alert('Please select a start and end date'); return; }
-        const colsParam = colKeys.filter(k=>cols[k]).join(',');
-        const params = new URLSearchParams({ start, end, columns: colsParam });
-        if (preview) params.set('preview', String(preview));
+        if(!startEl.value || !endEl.value){ alert('Please pick start and end dates'); return; }
+        const cols = Object.keys(selectedCols).filter(c=>selectedCols[c]).join(',');
+        const params = new URLSearchParams({ start: startEl.value, end: endEl.value, columns: cols });
+        if(preview) params.set('preview', String(preview));
         window.location = '/api/export.csv?' + params.toString();
       }
 
-      // Bulk handlers (Start / Status / Download)
+      // Export dropdown menu
+      let exportMenuEl = null;
+      function toggleExportMenu(){
+        if(exportMenuEl){
+          exportMenuEl.remove();
+          exportMenuEl = null;
+          return;
+        }
+        const menu = document.createElement('div');
+        menu.className = 'export-menu';
+        // items
+        const hint = document.createElement('div'); hint.className='hint'; hint.textContent = 'Export options';
+        menu.appendChild(hint);
+
+        const r1 = document.createElement('button'); r1.textContent = 'Export (REST)'; r1.onclick = ()=>{ exportRest(0); toggleExportMenu(); };
+        const r2 = document.createElement('button'); r2.textContent = 'Export (REST) — Preview 50'; r2.onclick = ()=>{ exportRest(50); toggleExportMenu(); };
+        const r3 = document.createElement('button'); r3.textContent = 'Export (Bulk redirect)'; r3.onclick = ()=>{ window.location = '/api/export.csv?start='+encodeURIComponent(startEl.value)+'&end='+encodeURIComponent(endEl.value)+'&useBulk=1'; toggleExportMenu(); };
+
+        menu.appendChild(r1); menu.appendChild(r2); menu.appendChild(r3);
+
+        exportDropdownRoot.appendChild(menu);
+        exportMenuEl = menu;
+        // click outside to close
+        setTimeout(()=> {
+          const onDoc = (ev)=>{
+            if(!exportDropdownRoot.contains(ev.target)){
+              if(exportMenuEl){ exportMenuEl.remove(); exportMenuEl = null; }
+              document.removeEventListener('click', onDoc);
+            }
+          };
+          document.addEventListener('click', onDoc);
+        }, 10);
+      }
+
+      // Bulk handlers
       async function startBulk(){
-        if(!start || !end){ alert('Please select a start and end date'); return; }
-        setBusyBulk(true); setStatus('Starting bulk...');
+        if(!startEl.value || !endEl.value){ alert('Please pick start and end dates'); return; }
+        setStatus('Starting bulk...');
+        toggleBusy(true);
         try{
-          const resp = await axios.post('/api/bulk/start', { start, end });
-          setBulkStatus(resp.data.status || 'STARTED');
-          setStatus('Bulk started.');
+          const resp = await axios.post('/api/bulk/start', { start: startEl.value, end: endEl.value });
+          bulkStatusEl.textContent = resp.data.status || 'STARTED';
+          setStatus('Bulk started');
         }catch(err){
           console.error(err);
           setStatus('Bulk start error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
-        }finally{ setBusyBulk(false); }
+        }finally{ toggleBusy(false); }
       }
       async function checkBulk(){
-        setStatus('Checking bulk status...');
+        setStatus('Checking bulk...');
+        toggleBusy(true);
         try{
           const resp = await axios.get('/api/bulk/status');
           const d = resp.data || {};
-          setBulkStatus(d.status || 'NONE');
-          setBulkObjects(d.objectCount || null);
-          setStatus('Bulk status: ' + (d.status || 'NONE'));
+          bulkStatusEl.textContent = d.status || 'NONE';
+          bulkObjectsEl.textContent = d.objectCount || '—';
+          setStatus('Bulk status: ' + bulkStatusEl.textContent);
         }catch(err){
           console.error(err);
           setStatus('Bulk status error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
-        }
+        }finally{ toggleBusy(false); }
       }
       function downloadBulk(preview=0){
         const params = new URLSearchParams();
@@ -153,101 +398,59 @@
         window.location = '/api/bulk/download?' + params.toString();
       }
 
-      // Pagination helpers
-      function prevPage(){ if(page > 1) fetchPage(page-1); }
-      function nextPage(){ if(orders.length === 0 || orders.length < pageSize) return; fetchPage(page+1); }
+      // Wire events
+      fetchBtn.addEventListener('click', ()=>fetchPage(1));
+      topPrev.addEventListener('click', ()=>{ if(page>1) fetchPage(page-1); });
+      topNext.addEventListener('click', ()=>{ fetchPage(page+1); });
+      bottomPrev.addEventListener('click', ()=>{ if(page>1) fetchPage(page-1); });
+      bottomNext.addEventListener('click', ()=>{ fetchPage(page+1); });
 
-      const showLargeHint = humanDateRangeDays(start, end) > 7;
-      const noMorePages = orders.length < pageSize;
+      exportRestBtn.addEventListener('click', ()=>exportRest(0));
+      exportPreviewBtn.addEventListener('click', ()=>exportRest(50));
+      exportToggle.addEventListener('click', toggleExportMenu);
 
-      return e('div', null,
-        e('div', {className:'controls'},
-          e('label', null, 'Start: ', e('input',{type:'date', value:start, onChange:ev=>setStart(ev.target.value)})),
-          e('label', null, 'End: ', e('input',{type:'date', value:end, onChange:ev=>setEnd(ev.target.value)})),
-          e('label', null, 'Page Size: ', e('select',{value:pageSize, onChange:ev=>setPageSize(Number(ev.target.value))},
-            [25,50,100,200].map(n=> e('option',{key:n, value:n}, String(n)))
-          )),
-          e('div', {className:'toolbar'},
-            e('button',{onClick:()=>fetchPage(1), disabled:loading}, loading ? 'Fetching...' : 'Fetch'),
-            e('button',{onClick:()=>prevPage(), disabled:loading || page<=1, className:'ghost'}, 'Prev'),
-            e('button',{onClick:()=>nextPage(), disabled:loading || noMorePages, className:'ghost'}, 'Next')
-          ),
-          e('div', {style:{marginLeft:'auto', display:'flex', gap:8, alignItems:'center'}},
-            // Export group
-            e('div', {className:'panel'},
-              e('div', {className:'small', style:{marginBottom:6}}, 'Export'),
-              e('div', {style:{display:'flex', gap:8}},
-                e('button',{onClick:()=>exportRest(0), disabled:loading}, 'Export (REST)'),
-                e('button',{onClick:()=>exportRest(50), disabled:loading, className:'ghost'}, 'Preview 50')
-              )
-            )
-          )
-        ),
+      startBulkBtn.addEventListener('click', startBulk);
+      checkBulkBtn.addEventListener('click', checkBulk);
+      downloadPreviewBtn.addEventListener('click', ()=>downloadBulk(50));
+      downloadFullBtn.addEventListener('click', ()=>downloadBulk(0));
 
-        e('div', {className:'grid'},
-          // Left: table + columns
-          e('div', null,
-            showLargeHint ? e('div', {style:{marginTop:10}}, e('div',{className:'warn'}, 'Large ranges (>7 days) — use Bulk export for reliable full exports.')) : null,
+      // initialize cols & header
+      function init(){
+        // build header structure from default columns
+        renderColsUI();
+      }
 
-            // Stats
-            e('div', {style:{display:'flex', gap:12, alignItems:'center', marginTop:12, flexWrap:'wrap'}},
-              e('div', {className:'stat'}, 'Shopify total: ' + (shopifyTotal === null ? 'unknown' : shopifyTotal)),
-              e('div', {className:'small'}, 'Rows fetched: ' + totalFetched),
-              e('div', {className:'small'}, 'Page: ' + page)
-            ),
+      function renderColsUI(){
+        colsRoot.innerHTML = '';
+        Object.keys(selectedCols).forEach(k=>{
+          const item = document.createElement('label');
+          item.className = 'col-item';
+          const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = selectedCols[k];
+          cb.onchange = ()=>{ selectedCols[k] = cb.checked; renderTable(); renderColsUI(); };
+          item.appendChild(cb);
+          const span = document.createElement('span'); span.style.marginLeft='6px'; span.textContent = k;
+          item.appendChild(span);
+          colsRoot.appendChild(item);
+        });
+        // initial empty table structure
+        renderTable();
+      }
 
-            // Columns selector
-            e('div', {style:{marginTop:12, display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}},
-              e('div', {className:'small'}, 'Columns:'),
-              e('div', {className:'cols'}, colKeys.map(k=> e('label',{key:k, className:'col-item'},
-                e('input',{type:'checkbox', checked:cols[k], onChange:()=>toggleCol(k)}), k
-              )))
-            ),
+      init();
 
-            // Table
-            e('div', {style:{marginTop:12}},
-              orders.length === 0 ? e('div', {className:'small'}, 'No data — click Fetch') :
-              e('table', null,
-                e('thead', null, e('tr', null, colKeys.filter(c=>cols[c]).map(c=> e('th',{key:c}, c)))),
-                e('tbody', null, orders.map((r,idx) => e('tr',{key:idx}, colKeys.filter(c=>cols[c]).map(c=> e('td',{key:c}, r[c] || '')))))
-              )
-            ),
+      // convenience: if the page has query params start/end, populate and fetch
+      (function prefillFromQuery(){
+        try{
+          const qp = new URLSearchParams(location.search);
+          const s = qp.get('start'); const e = qp.get('end');
+          if(s) startEl.value = s;
+          if(e) endEl.value = e;
+          const psize = qp.get('pageSize'); if(psize) pageSizeEl.value = psize;
+          if(s && e) { fetchPage(1); }
+        } catch(e){}
+      })();
 
-            // bottom bar
-            e('div', {className:'bottom-bar'},
-              e('div', null,
-                e('button',{onClick:prevPage, disabled:page<=1 || loading}, 'Prev'),
-                e('button',{onClick:nextPage, disabled:loading || noMorePages, style:{marginLeft:8}}, 'Next')
-              ),
-              e('div', null,
-                e('button',{onClick:()=>exportRest(0), disabled:loading}, 'Export (REST)'),
-                e('button',{onClick:()=>exportRest(50), disabled:loading, className:'ghost', style:{marginLeft:8}}, 'Preview 50')
-              )
-            )
-          ),
-
-          // Right: Bulk panel
-          e('div', null,
-            e('div', {className:'panel'},
-              e('div', {className:'small', style:{marginBottom:8}}, 'Bulk Export (recommended for large ranges)'),
-              e('div', {className:'bulk'},
-                e('div', {style:{display:'flex', gap:8, marginBottom:8}},
-                  e('button',{onClick:startBulk, disabled:busyBulk}, busyBulk ? 'Starting...' : 'Start bulk'),
-                  e('button',{onClick:checkBulk}, 'Check status')
-                ),
-                e('div', {style:{display:'flex', gap:8}},
-                  e('button',{onClick:()=>downloadBulk(50)}, 'Download (preview 50)'),
-                  e('button',{onClick:()=>downloadBulk(0), className:'ghost'}, 'Download (full)')
-                ),
-                e('div', {className:'tiny', style:{marginTop:8}}, bulkStatus ? ('Status: ' + bulkStatus + (bulkObjects ? ' — objects: ' + bulkObjects : '')) : 'No active bulk operation')
-              )
-            )
-          )
-        )
-      );
-    }
-
-    ReactDOM.createRoot(document.getElementById('root')).render(e(App));
+    })();
   </script>
 </body>
 </html>
