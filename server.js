@@ -205,16 +205,26 @@ async function fetchOrdersCount(created_at_min, created_at_max){
    All routes call requireApiKey which is a no-op unless ENFORCE_API_KEY=1
    ------------------------------ */
 
-/* Start bulk */
-app.post('/api/bulk/start', requireApiKey, async (req, res) => {
+// === REPLACE your current app.post('/api/bulk/start' ...) with this handler ===
+app.post('/api/bulk/start', requireApiKey, express.json(), async (req, res) => {
   try {
     const start = (req.body && req.body.start) || req.query.start;
     const end = (req.body && req.body.end) || req.query.end;
     if (!start || !end) return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
 
+    // sanity: if the range is very large, warn and allow but recommend chunking
+    const sDate = new Date(start + 'T00:00:00Z');
+    const eDate = new Date(end + 'T23:59:59Z');
+    const dayCount = Math.round((eDate - sDate) / (1000 * 60 * 60 * 24)) + 1;
+    if (dayCount > 180) {
+      // don't block, but include a friendly hint in the response if Shopify returns errors
+      console.warn(`Attempting bulk for ${dayCount} days. Consider running in monthly chunks.`);
+    }
+
     const startISO = new Date(start + 'T00:00:00Z').toISOString();
     const endISO = new Date(end + 'T23:59:59Z').toISOString();
 
+    // Simplified bulk query — note: removed `attributes` to reduce complexity
     const bulkQuery = `
       mutation {
         bulkOperationRunQuery(
@@ -231,7 +241,6 @@ app.post('/api/bulk/start', requireApiKey, async (req, res) => {
                   landingSite
                   referringSite
                   noteAttributes { name value }
-                  attributes { name value }
                 }
               }
             }
@@ -248,16 +257,38 @@ app.post('/api/bulk/start', requireApiKey, async (req, res) => {
     `;
 
     const j = await shopifyGraphQL(bulkQuery);
-    if (j.data && j.data.bulkOperationRunQuery && j.data.bulkOperationRunQuery.userErrors && j.data.bulkOperationRunQuery.userErrors.length) {
-      return res.status(500).json({ error: j.data.bulkOperationRunQuery.userErrors });
+
+    // If Shopify returned userErrors, surface them nicely
+    if (j.data && j.data.bulkOperationRunQuery && Array.isArray(j.data.bulkOperationRunQuery.userErrors) && j.data.bulkOperationRunQuery.userErrors.length) {
+      const userErrors = j.data.bulkOperationRunQuery.userErrors.map(ue => {
+        // userError fields vary — produce a readable shape
+        return {
+          field: ue.field || null,
+          message: ue.message || String(ue)
+        };
+      });
+      console.error('Shopify bulk userErrors:', userErrors);
+      return res.status(400).json({
+        error: 'Shopify returned userErrors for the bulkOperationRunQuery mutation.',
+        userErrors,
+        hint: dayCount > 180 ? 'Range is large (>180 days). Try splitting into smaller ranges (monthly) and run multiple bulk operations.' : undefined
+      });
     }
-    const op = j.data.bulkOperationRunQuery.bulkOperation;
+
+    // success path: return operation info
+    const op = (j.data && j.data.bulkOperationRunQuery && j.data.bulkOperationRunQuery.bulkOperation) || null;
+    if (!op) {
+      // Defensive fallback — return whole response for debugging
+      return res.status(500).json({ error: 'Unexpected response from Shopify', response: j });
+    }
     return res.json({ started: true, id: op.id, status: op.status });
   } catch (err) {
-    console.error('bulk/start error', err);
-    res.status(500).json({ error: err.message });
+    console.error('bulk/start error (exception)', err);
+    // if the error came from shopifyGraphQL it may already contain JSON; return message but also full stack to logs
+    return res.status(500).json({ error: err.message || String(err) });
   }
 });
+
 
 /* Bulk status */
 app.get('/api/bulk/status', requireApiKey, async (req, res) => {
