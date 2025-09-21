@@ -2,35 +2,57 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Shopify UTM Orders Dashboard — v2</title>
+  <title>Shopify UTM Orders Dashboard — cleaner UI</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial; padding:24px; background:#f7fafc;}
-    .card{background:white;padding:20px;border-radius:12px;box-shadow:0 8px 30px rgba(15,23,42,0.06);max-width:1200px;margin:20px auto;}
-    h1{margin:0 0 6px;font-size:20px;}
-    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;}
-    input[type=date], input[type=text], select{padding:8px;border-radius:8px;border:1px solid #e6edf3;}
-    button{padding:8px 12px;border-radius:8px;border:none;background:#111827;color:white;cursor:pointer;}
+    :root{
+      --bg:#f7fafc;
+      --muted:#6b7280;
+      --card:#ffffff;
+      --primary:#111827;
+      --accent:#2563eb;
+      --warn-bg:#fffbeb;
+      --warn-text:#b45309;
+    }
+    body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial; padding:20px; background:var(--bg); color:#0f1724;}
+    .wrap{max-width:1200px;margin:18px auto;}
+    .card{background:var(--card);padding:18px;border-radius:12px;box-shadow:0 8px 30px rgba(15,23,42,0.06);}
+    h1{margin:0;font-size:20px;}
+    .muted{color:var(--muted);font-size:13px;margin-top:6px;}
+    .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;}
+    input[type=date], select{padding:8px;border-radius:8px;border:1px solid #e6edf3;background:white;}
+    button{padding:8px 12px;border-radius:8px;border:none;background:var(--primary);color:white;cursor:pointer;}
+    button.ghost{background:transparent;color:var(--primary);border:1px solid #e6edf3;}
     button[disabled]{opacity:.45;cursor:not-allowed;}
+    .small{font-size:12px;color:var(--muted);}
+    .cols{display:flex;gap:6px;flex-wrap:wrap;margin-left:8px;}
+    .col-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;border:1px solid #eef2f7;}
+    .grid{display:grid;grid-template-columns:1fr 360px;gap:14px;margin-top:14px;}
+    .panel{padding:12px;border-radius:10px;background:#fbfdff;border:1px solid #eef2f7;}
+    .bulk{padding:10px;border-radius:8px;border:1px dashed #e6edf3;background:#fff;}
+    .warn{color:var(--warn-text);background:var(--warn-bg);padding:8px;border-radius:8px;border:1px solid #f3e2c8;}
     table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px;}
     th,td{padding:10px;border-bottom:1px solid #eef2f7;text-align:left;}
     th{background:#fbfdff;position:sticky;top:0;}
-    .muted{color:#6b7280;font-size:13px;}
-    .small{font-size:12px;color:#6b7280;}
-    .cols{display:flex;gap:6px;flex-wrap:wrap;margin-left:8px;}
-    .col-item{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:8px;border:1px solid #eef2f7;}
-    .warn{color:#b45309;background:#fff7ed;padding:8px;border-radius:8px;border:1px solid #f3e2c8;}
-    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
-    .bottom-controls{display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:12px;flex-wrap:wrap;}
-    .stat-big{font-weight:600;font-size:14px;margin-right:8px;}
+    .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+    .export-menu{display:flex;flex-direction:column;gap:6px;margin-left:8px;}
+    .bottom-bar{display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:12px;flex-wrap:wrap;}
+    .stat{font-weight:600;}
+    .tiny{font-size:11px;color:var(--muted);}
   </style>
-
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
 </head>
 <body>
-  <div id="root"></div>
+  <div class="wrap">
+    <div class="card">
+      <h1>Shopify UTM Orders Dashboard</h1>
+      <div class="muted">Cleaned action layout — exports & bulk controls grouped for clarity.</div>
+
+      <div id="root"></div>
+    </div>
+  </div>
 
   <script>
     const e = React.createElement;
@@ -59,163 +81,168 @@
         utm_source:true, utm_medium:true, utm_campaign:true, utm_term:true, utm_content:true
       });
 
-      // Bulk status
-      const [bulkStatus, setBulkStatus] = useState(null);
-      const [bulkObjects, setBulkObjects] = useState(null);
-      const [bulkStarting, setBulkStarting] = useState(false);
+      // Bulk
+      const [bulkStatus,setBulkStatus] = useState(null);
+      const [bulkObjects,setBulkObjects] = useState(null);
+      const [busyBulk,setBusyBulk] = useState(false);
 
-      const availableCols = Object.keys(cols);
+      const colKeys = Object.keys(cols);
 
       async function fetchPage(p=1){
-        if(!start || !end){ alert('select start and end'); return; }
+        if(!start || !end){ alert('Please select a start and end date'); return; }
         setLoading(true); setStatus('Fetching orders...');
         try{
-          const resp = await axios.get('/api/orders', {
-            params: { start, end, page: p, pageSize }
-          });
-          const data = resp.data || {};
-          setOrders(data.orders || []);
-          setTotalFetched(data.total_fetched || 0);
-          setShopifyTotal(data.shopify_total === null ? 'unknown' : data.shopify_total);
-          setPage(data.page || p);
-          setStatus('Showing ' + (data.orders||[]).length + ' rows (fetched ' + (data.total_fetched||0) + ')');
+          const resp = await axios.get('/api/orders', { params: { start, end, page: p, pageSize } });
+          const d = resp.data || {};
+          setOrders(d.orders || []);
+          setTotalFetched(d.total_fetched || 0);
+          setShopifyTotal(d.shopify_total === null ? 'unknown' : d.shopify_total);
+          setPage(d.page || p);
+          setStatus('Fetched '+ (d.orders||[]).length + ' rows.'); 
         }catch(err){
           console.error(err);
-          setStatus('error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
+          setStatus('Error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
           setOrders([]);
           setTotalFetched(0);
           setShopifyTotal(null);
-        }finally{ setLoading(false); }
-      }
-
-      function toggleCol(k){
-        setCols({...cols, [k]: !cols[k]});
-      }
-
-      function exportCsv(useBulk = false, preview = 0){
-        if(!start || !end){ alert('select start and end'); return; }
-        const selected = Object.keys(cols).filter(k=>cols[k]).join(',');
-        const q = new URLSearchParams({
-          start, end, columns: selected, preview: preview ? String(preview) : '',
-          useBulk: useBulk ? '1' : '0'
-        });
-        window.location = '/api/export.csv?' + q.toString();
-      }
-
-      async function startBulk(){
-        if(!start || !end){ alert('select start and end'); return; }
-        setBulkStarting(true);
-        setBulkStatus('starting');
-        try{
-          const resp = await axios.post('/api/bulk/start', { start, end });
-          setBulkStatus(resp.data.status || 'STARTED');
-          setStatus('Bulk started: ' + (resp.data.id || 'id unknown'));
-        }catch(err){
-          console.error(err);
-          setStatus('bulk start error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
-          setBulkStatus(null);
         }finally{
-          setBulkStarting(false);
+          setLoading(false);
         }
       }
 
+      function toggleCol(k){ setCols({...cols, [k]: !cols[k]}); }
+
+      // Export (REST)
+      function exportRest(preview=0){
+        if(!start || !end){ alert('Please select a start and end date'); return; }
+        const colsParam = colKeys.filter(k=>cols[k]).join(',');
+        const params = new URLSearchParams({ start, end, columns: colsParam });
+        if (preview) params.set('preview', String(preview));
+        window.location = '/api/export.csv?' + params.toString();
+      }
+
+      // Bulk handlers (Start / Status / Download)
+      async function startBulk(){
+        if(!start || !end){ alert('Please select a start and end date'); return; }
+        setBusyBulk(true); setStatus('Starting bulk...');
+        try{
+          const resp = await axios.post('/api/bulk/start', { start, end });
+          setBulkStatus(resp.data.status || 'STARTED');
+          setStatus('Bulk started.');
+        }catch(err){
+          console.error(err);
+          setStatus('Bulk start error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
+        }finally{ setBusyBulk(false); }
+      }
       async function checkBulk(){
-        setBulkStatus('checking...');
+        setStatus('Checking bulk status...');
         try{
           const resp = await axios.get('/api/bulk/status');
           const d = resp.data || {};
           setBulkStatus(d.status || 'NONE');
           setBulkObjects(d.objectCount || null);
-          setStatus('Bulk status: ' + (d.status || 'none'));
+          setStatus('Bulk status: ' + (d.status || 'NONE'));
         }catch(err){
           console.error(err);
-          setStatus('bulk status error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
-          setBulkStatus(null);
+          setStatus('Bulk status error: ' + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message));
         }
       }
-
-      function downloadBulk(preview = 0){
-        const q = new URLSearchParams({ preview: preview ? String(preview) : '' });
-        window.location = '/api/bulk/download?' + q.toString();
+      function downloadBulk(preview=0){
+        const params = new URLSearchParams();
+        if(preview) params.set('preview', String(preview));
+        window.location = '/api/bulk/download?' + params.toString();
       }
 
-      // bottom Prev/Next handlers (keeps in sync with top controls)
-      function goPrev(){ if(page > 1) fetchPage(page - 1); }
-      function goNext(){ fetchPage(page + 1); }
+      // Pagination helpers
+      function prevPage(){ if(page > 1) fetchPage(page-1); }
+      function nextPage(){ if(orders.length === 0 || orders.length < pageSize) return; fetchPage(page+1); }
 
-      const rangeDays = humanDateRangeDays(start, end);
-      const showLargeHint = rangeDays > 7;
+      const showLargeHint = humanDateRangeDays(start, end) > 7;
+      const noMorePages = orders.length < pageSize;
 
-      // Determine if there are more pages (approx): if fetched rows < pageSize assume no more pages
-      const noMorePages = (orders.length < pageSize);
-
-      return e('div', {className:'card'},
-        e('h1', null, 'Shopify UTM Orders Dashboard — v2'),
-        e('div', {className:'muted small'}, 'No API key required in the UI. Use Export (REST) for small ranges or Bulk for large exports.'),
-
-        showLargeHint ? e('div', {style:{marginTop:10}}, e('div',{className:'warn'}, 'Large ranges (>7 days) are best exported using Bulk Export — click "Start Bulk" then "Check Bulk Status" and "Download".')) : null,
-
-        e('div', {className:'controls', style:{marginTop:12}},
-          e('label', null, 'Start: ', e('input',{type:'date', value:start, onChange: (ev)=>setStart(ev.target.value)})),
-          e('label', null, 'End: ', e('input',{type:'date', value:end, onChange: (ev)=>setEnd(ev.target.value)})),
-          e('label', null, 'Page Size: ', e('select',{value:pageSize, onChange: ev=>setPageSize(Number(ev.target.value))},
+      return e('div', null,
+        e('div', {className:'controls'},
+          e('label', null, 'Start: ', e('input',{type:'date', value:start, onChange:ev=>setStart(ev.target.value)})),
+          e('label', null, 'End: ', e('input',{type:'date', value:end, onChange:ev=>setEnd(ev.target.value)})),
+          e('label', null, 'Page Size: ', e('select',{value:pageSize, onChange:ev=>setPageSize(Number(ev.target.value))},
             [25,50,100,200].map(n=> e('option',{key:n, value:n}, String(n)))
           )),
-          e('button',{onClick: ()=>fetchPage(1), disabled:loading}, loading ? 'Fetching...' : 'Fetch'),
-          e('button',{onClick: ()=>exportCsv(false), disabled:loading}, 'Export CSV (REST)'),
-          e('div', {style:{marginLeft:8}}, e('button',{onClick: ()=>fetchPage(Math.max(1,page-1)), disabled:loading || page<=1}, 'Prev')),
-          e('div', null, e('button',{onClick: ()=>fetchPage(page+1), disabled:loading || noMorePages}, 'Next')),
-          e('div', {style:{marginLeft:12}}, e('span', {className:'small'}, status))
-        ),
-
-        // Bulk Controls
-        e('div', {className:'row', style:{marginTop:12, gap:12, alignItems:'center'}},
-          e('div', null, e('button',{onClick: startBulk, disabled: bulkStarting}, bulkStarting ? 'Starting...' : 'Start Bulk')),
-          e('div', null, e('button',{onClick: checkBulk}, 'Check Bulk Status')),
-          e('div', null, e('button',{onClick: ()=>downloadBulk(50)}, 'Download Bulk (preview 50)')),
-          e('div', null, e('button',{onClick: ()=>downloadBulk(0)}, 'Download Bulk (full)')),
-          e('div', {className:'small'}, bulkStatus ? 'Bulk: ' + bulkStatus + (bulkObjects ? ' — objects: ' + bulkObjects : '') : '')
-        ),
-
-        // Totals / stats area (prominent)
-        e('div', {style:{marginTop:12, display:'flex', alignItems:'center', gap:12, flexWrap:'wrap'}},
-          e('div', {className:'stat-big'}, 'Actual total in range (Shopify): ' + (shopifyTotal === null ? 'unknown' : shopifyTotal)),
-          e('div', {className:'small'}, 'Rows fetched: ' + totalFetched),
-          e('div', {className:'small'}, 'Page: ' + page)
-        ),
-
-        e('div', {style:{display:'flex', alignItems:'center', marginTop:12}},
-          e('div', {className:'small'}, 'Columns:'),
-          e('div', {className:'cols'}, availableCols.map(k=> e('label',{key:k, className:'col-item'},
-            e('input',{type:'checkbox', checked:cols[k], onChange: ()=>toggleCol(k)}), k
-          )))
-        ),
-
-        e('div', {style:{marginTop:12}},
-          orders.length === 0 ? e('div', {className:'small'}, 'No data — fetch a range') :
-          e('table', null,
-            e('thead', null, e('tr', null, availableCols.filter(c=>cols[c]).map(c=> e('th',{key:c}, c)))),
-            e('tbody', null, orders.map((r, idx)=> e('tr',{key:idx}, availableCols.filter(c=>cols[c]).map(c=> e('td',{key:c}, r[c] || '')))))
-          )
-        ),
-
-        // Bottom controls (Prev/Next + export)
-        e('div', {className:'bottom-controls'},
-          e('div', null,
-            e('button',{onClick: goPrev, disabled: page<=1 || loading}, 'Prev'),
-            e('button',{onClick: goNext, disabled: loading || noMorePages, style:{marginLeft:8}}, 'Next')
+          e('div', {className:'toolbar'},
+            e('button',{onClick:()=>fetchPage(1), disabled:loading}, loading ? 'Fetching...' : 'Fetch'),
+            e('button',{onClick:()=>prevPage(), disabled:loading || page<=1, className:'ghost'}, 'Prev'),
+            e('button',{onClick:()=>nextPage(), disabled:loading || noMorePages, className:'ghost'}, 'Next')
           ),
-          e('div', null,
-            e('button',{onClick: ()=>exportCsv(false), disabled:loading}, 'Export CSV (REST)'),
-            e('button',{onClick: ()=>exportCsv(true), disabled:loading, style:{marginLeft:8}}, 'Export CSV (Bulk redirect)'),
-            e('button',{onClick: ()=>downloadBulk(50), disabled:loading, style:{marginLeft:8}}, 'Download Bulk (preview 50)')
+          e('div', {style:{marginLeft:'auto', display:'flex', gap:8, alignItems:'center'}},
+            // Export group
+            e('div', {className:'panel'},
+              e('div', {className:'small', style:{marginBottom:6}}, 'Export'),
+              e('div', {style:{display:'flex', gap:8}},
+                e('button',{onClick:()=>exportRest(0), disabled:loading}, 'Export (REST)'),
+                e('button',{onClick:()=>exportRest(50), disabled:loading, className:'ghost'}, 'Preview 50')
+              )
+            )
           )
         ),
 
-        e('div', {style:{marginTop:10, color:'#6b7280', fontSize:12}},
-          e('div', null, 'Notes:'),
-          e('div', null, '- Use the bulk flow for large exports.'),
-          e('div', null, '- If you get a 401 from API calls, ensure your server is configured to allow anonymous requests or provide the required API header on the server side.')
+        e('div', {className:'grid'},
+          // Left: table + columns
+          e('div', null,
+            showLargeHint ? e('div', {style:{marginTop:10}}, e('div',{className:'warn'}, 'Large ranges (>7 days) — use Bulk export for reliable full exports.')) : null,
+
+            // Stats
+            e('div', {style:{display:'flex', gap:12, alignItems:'center', marginTop:12, flexWrap:'wrap'}},
+              e('div', {className:'stat'}, 'Shopify total: ' + (shopifyTotal === null ? 'unknown' : shopifyTotal)),
+              e('div', {className:'small'}, 'Rows fetched: ' + totalFetched),
+              e('div', {className:'small'}, 'Page: ' + page)
+            ),
+
+            // Columns selector
+            e('div', {style:{marginTop:12, display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}},
+              e('div', {className:'small'}, 'Columns:'),
+              e('div', {className:'cols'}, colKeys.map(k=> e('label',{key:k, className:'col-item'},
+                e('input',{type:'checkbox', checked:cols[k], onChange:()=>toggleCol(k)}), k
+              )))
+            ),
+
+            // Table
+            e('div', {style:{marginTop:12}},
+              orders.length === 0 ? e('div', {className:'small'}, 'No data — click Fetch') :
+              e('table', null,
+                e('thead', null, e('tr', null, colKeys.filter(c=>cols[c]).map(c=> e('th',{key:c}, c)))),
+                e('tbody', null, orders.map((r,idx) => e('tr',{key:idx}, colKeys.filter(c=>cols[c]).map(c=> e('td',{key:c}, r[c] || '')))))
+              )
+            ),
+
+            // bottom bar
+            e('div', {className:'bottom-bar'},
+              e('div', null,
+                e('button',{onClick:prevPage, disabled:page<=1 || loading}, 'Prev'),
+                e('button',{onClick:nextPage, disabled:loading || noMorePages, style:{marginLeft:8}}, 'Next')
+              ),
+              e('div', null,
+                e('button',{onClick:()=>exportRest(0), disabled:loading}, 'Export (REST)'),
+                e('button',{onClick:()=>exportRest(50), disabled:loading, className:'ghost', style:{marginLeft:8}}, 'Preview 50')
+              )
+            )
+          ),
+
+          // Right: Bulk panel
+          e('div', null,
+            e('div', {className:'panel'},
+              e('div', {className:'small', style:{marginBottom:8}}, 'Bulk Export (recommended for large ranges)'),
+              e('div', {className:'bulk'},
+                e('div', {style:{display:'flex', gap:8, marginBottom:8}},
+                  e('button',{onClick:startBulk, disabled:busyBulk}, busyBulk ? 'Starting...' : 'Start bulk'),
+                  e('button',{onClick:checkBulk}, 'Check status')
+                ),
+                e('div', {style:{display:'flex', gap:8}},
+                  e('button',{onClick:()=>downloadBulk(50)}, 'Download (preview 50)'),
+                  e('button',{onClick:()=>downloadBulk(0), className:'ghost'}, 'Download (full)')
+                ),
+                e('div', {className:'tiny', style:{marginTop:8}}, bulkStatus ? ('Status: ' + bulkStatus + (bulkObjects ? ' — objects: ' + bulkObjects : '')) : 'No active bulk operation')
+              )
+            )
+          )
         )
       );
     }
