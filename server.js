@@ -1,4 +1,4 @@
-// Shopify UTM Orders Dashboard — FINAL STABLE PRODUCTION VERSION
+// Shopify UTM Orders Dashboard — FULL PRODUCTION VERSION
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -116,7 +116,7 @@ app.get('/api/orders', async (req, res) => {
     const created_at_min = new Date(start+'T00:00:00Z').toISOString();
     const created_at_max = new Date(end+'T23:59:59Z').toISOString();
 
-    // Get Shopify total count
+    // Shopify total count
     let shopifyTotal = 0;
     try {
       const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
@@ -135,18 +135,10 @@ app.get('/api/orders', async (req, res) => {
     while(url && allRows.length < MAX_SAFE_FETCH){
 
       const r = await fetch(url,{ headers:{'X-Shopify-Access-Token':TOKEN}});
-
-      if (!r.ok) {
-        console.error("Shopify REST error:", await r.text());
-        break;
-      }
+      if (!r.ok) break;
 
       const data = await r.json();
-
-      if (!data.orders || !Array.isArray(data.orders)) {
-        console.warn("Unexpected Shopify response:", data);
-        break;
-      }
+      if (!data.orders || !Array.isArray(data.orders)) break;
 
       for(const o of data.orders){
         allRows.push(mapOrderFromREST(o));
@@ -160,8 +152,7 @@ app.get('/api/orders', async (req, res) => {
 
     const p = Number(page);
     const ps = Number(pageSize);
-    const startIndex = (p-1)*ps;
-    const paged = allRows.slice(startIndex,startIndex+ps);
+    const paged = allRows.slice((p-1)*ps,(p-1)*ps+ps);
 
     res.json({
       orders:paged,
@@ -172,13 +163,66 @@ app.get('/api/orders', async (req, res) => {
     });
 
   } catch(err){
-    console.error("Orders route error:", err);
     res.status(500).json({ error:err.message });
   }
 });
 
 /* =====================================================
-   BULK START (CORRECT STRUCTURE)
+   EXPORT CSV (REST)
+===================================================== */
+
+app.get('/api/export.csv', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end)
+      return res.status(400).json({ error: 'start & end required' });
+
+    const created_at_min = new Date(start+'T00:00:00Z').toISOString();
+    const created_at_max = new Date(end+'T23:59:59Z').toISOString();
+
+    let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+
+    const rows = [];
+    const MAX_SAFE_EXPORT = 10000;
+
+    while(url && rows.length < MAX_SAFE_EXPORT){
+
+      const r = await fetch(url,{ headers:{'X-Shopify-Access-Token':TOKEN}});
+      if (!r.ok) break;
+
+      const data = await r.json();
+      if (!data.orders || !Array.isArray(data.orders)) break;
+
+      for(const o of data.orders){
+        rows.push(mapOrderFromREST(o));
+      }
+
+      const link = r.headers.get('link');
+      url = link && link.includes('rel="next"') ? link.match(/<([^>]+)>/)[1] : null;
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    res.setHeader('Content-Type','text/csv');
+    res.setHeader('Content-Disposition','attachment; filename="shopify-export.csv"');
+
+    const headers = ['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
+    res.write(headers.join(',') + '\n');
+
+    for(const row of rows){
+      const line = headers.map(k => `"${(row[k]||'').replace(/"/g,'""')}"`).join(',');
+      res.write(line + '\n');
+    }
+
+    res.end();
+
+  } catch(err){
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* =====================================================
+   BULK START
 ===================================================== */
 
 app.post('/api/bulk/start', async (req,res)=>{
@@ -220,7 +264,6 @@ app.post('/api/bulk/start', async (req,res)=>{
     res.json(r.data.bulkOperationRunQuery.bulkOperation);
 
   }catch(err){ 
-    console.error("Bulk start error:", err);
     res.status(500).json({error:err.message});
   }
 });
@@ -272,7 +315,6 @@ app.get('/api/bulk/download', async (req,res)=>{
     res.end();
 
   }catch(err){
-    console.error("Bulk download error:", err);
     res.status(500).json({error:err.message});
   }
 });
