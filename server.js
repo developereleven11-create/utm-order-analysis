@@ -1,4 +1,4 @@
-// Shopify UTM Orders Dashboard — FULL PRODUCTION VERSION
+// Shopify UTM Orders Dashboard — FINAL STABLE VERSION (No duplicates + correct bulk)
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -105,7 +105,7 @@ function mapOrderFromBulk(node){
 }
 
 /* =====================================================
-   REST PREVIEW (SAFE + PAGINATED)
+   REST PREVIEW (SAFE)
 ===================================================== */
 
 app.get('/api/orders', async (req, res) => {
@@ -116,16 +116,10 @@ app.get('/api/orders', async (req, res) => {
     const created_at_min = new Date(start+'T00:00:00Z').toISOString();
     const created_at_max = new Date(end+'T23:59:59Z').toISOString();
 
-    // Shopify total count
-    let shopifyTotal = 0;
-    try {
-      const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-      const countResp = await fetch(countUrl, { headers:{'X-Shopify-Access-Token':TOKEN}});
-      const countData = await countResp.json();
-      shopifyTotal = countData.count || 0;
-    } catch(e){
-      console.warn("Count fetch failed:", e.message);
-    }
+    const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+    const countResp = await fetch(countUrl, { headers:{'X-Shopify-Access-Token':TOKEN}});
+    const countData = await countResp.json();
+    const shopifyTotal = countData.count || 0;
 
     let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
 
@@ -222,7 +216,7 @@ app.get('/api/export.csv', async (req, res) => {
 });
 
 /* =====================================================
-   BULK START
+   BULK START (FIXED)
 ===================================================== */
 
 app.post('/api/bulk/start', async (req,res)=>{
@@ -238,7 +232,7 @@ app.post('/api/bulk/start', async (req,res)=>{
         bulkOperationRunQuery(
           query: """
           {
-            orders(query: "created_at:>=${startISO} created_at:<=${endISO}") {
+            orders(query: "status:any created_at:>=${startISO} created_at:<=${endISO}") {
               id
               name
               createdAt
@@ -273,17 +267,13 @@ app.post('/api/bulk/start', async (req,res)=>{
 ===================================================== */
 
 app.get('/api/bulk/status', async (req,res)=>{
-  try{
-    const q=`{ currentBulkOperation { status url objectCount } }`;
-    const r=await shopifyGraphQL(q);
-    res.json(r.data.currentBulkOperation||{status:'NONE'});
-  }catch(err){
-    res.status(500).json({error:err.message});
-  }
+  const q=`{ currentBulkOperation { status url objectCount } }`;
+  const r=await shopifyGraphQL(q);
+  res.json(r.data.currentBulkOperation||{status:'NONE'});
 });
 
 /* =====================================================
-   BULK DOWNLOAD
+   BULK DOWNLOAD (DEDUPLICATED)
 ===================================================== */
 
 app.get('/api/bulk/download', async (req,res)=>{
@@ -302,13 +292,24 @@ app.get('/api/bulk/download', async (req,res)=>{
 
     res.setHeader('Content-Type','text/csv');
     res.setHeader('Content-Disposition','attachment; filename="bulk.csv"');
-    res.write('order_number,created_at,utm_source,utm_medium,utm_campaign,utm_term,utm_content\n');
+
+    const headers=['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
+    res.write(headers.join(',')+'\n');
+
+    const seenIds=new Set();
 
     for await (const line of rl){
       if(!line.trim()) continue;
+
       const parsed=JSON.parse(line);
+
+      if(!parsed.id || !parsed.name || !parsed.createdAt) continue;
+
+      if(seenIds.has(parsed.id)) continue;
+      seenIds.add(parsed.id);
+
       const row=mapOrderFromBulk(parsed);
-      const csv=Object.values(row).map(v=>`"${(v||'').replace(/"/g,'""')}"`).join(',');
+      const csv=headers.map(k=>`"${(row[k]||'').replace(/"/g,'""')}"`).join(',');
       res.write(csv+'\n');
     }
 
