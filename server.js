@@ -1,5 +1,4 @@
-// Shopify UTM Orders Dashboard — FINAL STABLE REST VERSION
-// Uses REST API for accurate UTM extraction from landing_site + note_attributes
+// Shopify UTM Orders Dashboard — FAST REST VERSION (Optimized for 1 Month)
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -79,51 +78,30 @@ function mapOrder(o){
 }
 
 /* =====================================================
-   Fetch Orders Properly (No Duplicates)
+   Fetch Orders Efficiently (Sequential Pagination)
 ===================================================== */
 
-async function fetchAllOrders(created_at_min, created_at_max){
+async function fetchOrdersPage(url){
+  const r = await fetch(url,{
+    headers:{ 'X-Shopify-Access-Token': TOKEN }
+  });
 
-  let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
-
-  const allOrders = [];
-  const seenIds = new Set();
-
-  while (url){
-
-    const r = await fetch(url,{
-      headers:{ 'X-Shopify-Access-Token': TOKEN }
-    });
-
-    if (!r.ok) {
-      console.error("Shopify error:", await r.text());
-      break;
-    }
-
-    const data = await r.json();
-
-    if (!data.orders || !Array.isArray(data.orders)) break;
-
-    for (const o of data.orders){
-      if (seenIds.has(o.id)) continue;
-      seenIds.add(o.id);
-      allOrders.push(o);
-    }
-
-    const link = r.headers.get('link');
-    url = link && link.includes('rel="next"')
-      ? link.match(/<([^>]+)>; rel="next"/)[1]
-      : null;
-
-    // small delay to avoid rate limit
-    await new Promise(resolve => setTimeout(resolve, 150));
+  if (!r.ok) {
+    throw new Error(await r.text());
   }
 
-  return allOrders;
+  const data = await r.json();
+  const link = r.headers.get('link');
+
+  const nextUrl = link && link.includes('rel="next"')
+    ? link.match(/<([^>]+)>; rel="next"/)[1]
+    : null;
+
+  return { orders: data.orders || [], nextUrl };
 }
 
 /* =====================================================
-   Preview Endpoint
+   Preview Endpoint (Loads Only Needed Page)
 ===================================================== */
 
 app.get('/api/orders', async (req, res) => {
@@ -137,7 +115,6 @@ app.get('/api/orders', async (req, res) => {
     const created_at_min = new Date(start+'T00:00:00Z').toISOString();
     const created_at_max = new Date(end+'T23:59:59Z').toISOString();
 
-    // Get total count
     const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
 
     const countResp = await fetch(countUrl,{
@@ -147,22 +124,33 @@ app.get('/api/orders', async (req, res) => {
     const countData = await countResp.json();
     const shopifyTotal = countData.count || 0;
 
-    const ordersRaw = await fetchAllOrders(created_at_min, created_at_max);
+    const limit = 250;
+    const targetIndexStart = (page - 1) * pageSize;
+    const targetIndexEnd = targetIndexStart + Number(pageSize);
 
-    // Sort by created_at descending
-    ordersRaw.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+    let currentUrl = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=${limit}&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
 
-    const mapped = ordersRaw.map(mapOrder);
+    let collected = [];
+    let currentIndex = 0;
 
-    const p = Number(page);
-    const ps = Number(pageSize);
-    const paged = mapped.slice((p-1)*ps, (p-1)*ps+ps);
+    while (currentUrl && collected.length < targetIndexEnd){
+
+      const { orders, nextUrl } = await fetchOrdersPage(currentUrl);
+
+      for (const o of orders){
+        if (currentIndex >= targetIndexStart && collected.length < targetIndexEnd){
+          collected.push(mapOrder(o));
+        }
+        currentIndex++;
+      }
+
+      currentUrl = nextUrl;
+    }
 
     res.json({
-      orders: paged,
-      page: p,
-      pageSize: ps,
-      total_fetched: mapped.length,
+      orders: collected,
+      page: Number(page),
+      pageSize: Number(pageSize),
       shopify_total: shopifyTotal
     });
 
@@ -172,7 +160,7 @@ app.get('/api/orders', async (req, res) => {
 });
 
 /* =====================================================
-   Export CSV
+   Export CSV (Streams While Fetching)
 ===================================================== */
 
 app.get('/api/export.csv', async (req, res) => {
@@ -186,10 +174,7 @@ app.get('/api/export.csv', async (req, res) => {
     const created_at_min = new Date(start+'T00:00:00Z').toISOString();
     const created_at_max = new Date(end+'T23:59:59Z').toISOString();
 
-    const ordersRaw = await fetchAllOrders(created_at_min, created_at_max);
-    ordersRaw.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
-
-    const mapped = ordersRaw.map(mapOrder);
+    let currentUrl = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
 
     res.setHeader('Content-Type','text/csv');
     res.setHeader('Content-Disposition','attachment; filename="shopify-utm-export.csv"');
@@ -197,11 +182,19 @@ app.get('/api/export.csv', async (req, res) => {
     const headers = ['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
     res.write(headers.join(',') + '\n');
 
-    for(const row of mapped){
-      const line = headers.map(k =>
-        `"${(row[k]||'').replace(/"/g,'""')}"`
-      ).join(',');
-      res.write(line + '\n');
+    while (currentUrl){
+
+      const { orders, nextUrl } = await fetchOrdersPage(currentUrl);
+
+      for (const o of orders){
+        const row = mapOrder(o);
+        const line = headers.map(k =>
+          `"${(row[k]||'').replace(/"/g,'""')}"`
+        ).join(',');
+        res.write(line + '\n');
+      }
+
+      currentUrl = nextUrl;
     }
 
     res.end();
