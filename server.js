@@ -1,7 +1,7 @@
-// server.js — Shopify UTM Orders Dashboard (Stable Bulk Version)
+// Shopify UTM Orders Dashboard — COMPLETE PRODUCTION VERSION
 
 const express = require('express');
-const fetch = require('node-fetch'); // v2
+const fetch = require('node-fetch');
 const cors = require('cors');
 const { URL } = require('url');
 const zlib = require('zlib');
@@ -13,33 +13,16 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// =====================
-// ENV CONFIG
-// =====================
-
 const SHOP = process.env.SHOPIFY_STORE;
 const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
-
-const API_KEY = process.env.API_KEY || 'dev_key';
-const ENFORCE = String(process.env.ENFORCE_API_KEY || '').trim() === '1';
 
 if (!SHOP || !TOKEN) {
   console.warn('⚠️ Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN');
 }
 
-// Optional API key enforcement
-function requireApiKey(req, res, next) {
-  if (!ENFORCE) return next();
-  const key = req.get('x-api-key') || req.query.api_key || '';
-  if (key !== API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized - invalid API key' });
-  }
-  next();
-}
-
-// =====================
-// SHOPIFY GRAPHQL HELPER
-// =====================
+/* ==============================
+   HELPERS
+============================== */
 
 async function shopifyGraphQL(query) {
   const url = `https://${SHOP}/admin/api/2025-07/graphql.json`;
@@ -57,29 +40,19 @@ async function shopifyGraphQL(query) {
   return json;
 }
 
-// =====================
-// DATE FORMAT (IST)
-// =====================
-
-function formatDateToIST(isoString) {
+function formatDateToIST(isoString){
   if (!isoString) return '';
   const d = new Date(isoString);
-  const istMs = d.getTime() + (330 * 60 * 1000);
-  const ist = new Date(istMs);
-  const pad = (n) => String(n).padStart(2, '0');
+  const ist = new Date(d.getTime() + 330 * 60000);
+  const pad = n => String(n).padStart(2,'0');
   return `${ist.getUTCFullYear()}-${pad(ist.getUTCMonth()+1)}-${pad(ist.getUTCDate())} ${pad(ist.getUTCHours())}:${pad(ist.getUTCMinutes())}:${pad(ist.getUTCSeconds())}`;
 }
-
-// =====================
-// UTM EXTRACTION
-// =====================
 
 function extractUtmFromUrl(urlString){
   const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
   if (!urlString) return out;
   try {
-    const base = urlString.startsWith('http') ? urlString : 'https://dummy.com' + urlString;
-    const u = new URL(base);
+    const u = new URL(urlString.startsWith('http') ? urlString : 'https://dummy.com'+urlString);
     for (const [k,v] of u.searchParams.entries()){
       if (k.startsWith('utm_')) out[k] = v;
     }
@@ -90,9 +63,8 @@ function extractUtmFromUrl(urlString){
 function extractUtmFromAttributes(attrs){
   const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
   if (!Array.isArray(attrs)) return out;
-
   for (const a of attrs){
-    const n = (a.name || '').toLowerCase();
+    const n = (a.name||'').toLowerCase();
     const v = a.value || '';
     if (!v) continue;
     if (n.includes('utm_source')) out.utm_source = v;
@@ -118,19 +90,70 @@ function mapOrder(node){
   };
 }
 
-// =====================
-// BULK START (FIXED)
-// =====================
+/* ==============================
+   REST PREVIEW WITH PAGINATION
+============================== */
 
-app.post('/api/bulk/start', requireApiKey, async (req, res) => {
+app.get('/api/orders', async (req, res) => {
   try {
-    const { start, end } = req.body;
-    if (!start || !end) {
-      return res.status(400).json({ error: 'start and end required (YYYY-MM-DD)' });
+    const { start, end, page = 1, pageSize = 50 } = req.query;
+    if (!start || !end) return res.status(400).json({ error:'start & end required' });
+
+    const created_at_min = new Date(start+'T00:00:00Z').toISOString();
+    const created_at_max = new Date(end+'T23:59:59Z').toISOString();
+
+    const countUrl = `https://${SHOP}/admin/api/2025-07/orders/count.json?status=any&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+    const countResp = await fetch(countUrl, { headers:{'X-Shopify-Access-Token':TOKEN}});
+    const countData = await countResp.json();
+    const shopifyTotal = countData.count || 0;
+
+    let url = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+    const allRows = [];
+
+    while(url){
+      const r = await fetch(url,{ headers:{'X-Shopify-Access-Token':TOKEN}});
+      const data = await r.json();
+      for(const o of data.orders){
+        const utmUrl = extractUtmFromUrl(o.landing_site);
+        const utmAttr = extractUtmFromAttributes(o.note_attributes||[]);
+        allRows.push({
+          order_number:o.name,
+          created_at:formatDateToIST(o.created_at),
+          ...utmUrl,
+          ...utmAttr
+        });
+      }
+      const link = r.headers.get('link');
+      url = link && link.includes('rel="next"') ? link.match(/<([^>]+)>/)[1] : null;
     }
 
-    const startISO = new Date(start + 'T00:00:00Z').toISOString();
-    const endISO = new Date(end + 'T23:59:59Z').toISOString();
+    const p = Number(page);
+    const ps = Number(pageSize);
+    const startIndex = (p-1)*ps;
+    const paged = allRows.slice(startIndex,startIndex+ps);
+
+    res.json({
+      orders:paged,
+      page:p,
+      pageSize:ps,
+      total_fetched:allRows.length,
+      shopify_total:shopifyTotal
+    });
+
+  } catch(err){
+    res.status(500).json({ error:err.message });
+  }
+});
+
+/* ==============================
+   BULK START (CORRECT)
+============================== */
+
+app.post('/api/bulk/start', async (req,res)=>{
+  try{
+    const { start, end } = req.body;
+    const startISO = new Date(start+'T00:00:00Z').toISOString();
+    const endISO = new Date(end+'T23:59:59Z').toISOString();
 
     const query = `
       mutation {
@@ -143,95 +166,64 @@ app.post('/api/bulk/start', requireApiKey, async (req, res) => {
               createdAt
               landingSite
               referringSite
-              noteAttributes {
-                name
-                value
-              }
+              noteAttributes { name value }
             }
           }
           """
-        ) {
+        ){
           bulkOperation { id status }
           userErrors { field message }
         }
       }
     `;
 
-    const response = await shopifyGraphQL(query);
-    const result = response.data.bulkOperationRunQuery;
-
-    if (result.userErrors.length > 0) {
-      return res.status(400).json({
-        error: "Shopify userErrors",
-        userErrors: result.userErrors
-      });
+    const r = await shopifyGraphQL(query);
+    if(r.data.bulkOperationRunQuery.userErrors.length){
+      return res.status(400).json(r.data.bulkOperationRunQuery.userErrors);
     }
+    res.json(r.data.bulkOperationRunQuery.bulkOperation);
 
-    res.json({ started: true, id: result.bulkOperation.id, status: result.bulkOperation.status });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  }catch(err){ res.status(500).json({error:err.message}); }
 });
 
-// =====================
-// BULK STATUS
-// =====================
+/* ==============================
+   BULK STATUS
+============================== */
 
-app.get('/api/bulk/status', requireApiKey, async (req, res) => {
-  try {
-    const query = `{ currentBulkOperation { id status errorCode objectCount url } }`;
-    const response = await shopifyGraphQL(query);
-    res.json(response.data.currentBulkOperation || { status: 'NONE' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get('/api/bulk/status', async (req,res)=>{
+  const q=`{ currentBulkOperation { status url objectCount } }`;
+  const r=await shopifyGraphQL(q);
+  res.json(r.data.currentBulkOperation||{status:'NONE'});
 });
 
-// =====================
-// BULK DOWNLOAD
-// =====================
+/* ==============================
+   BULK DOWNLOAD
+============================== */
 
-app.get('/api/bulk/download', requireApiKey, async (req, res) => {
-  try {
-    const statusQuery = `{ currentBulkOperation { status url } }`;
-    const statusResp = await shopifyGraphQL(statusQuery);
-    const op = statusResp.data.currentBulkOperation;
+app.get('/api/bulk/download', async (req,res)=>{
+  const q=`{ currentBulkOperation { status url } }`;
+  const r=await shopifyGraphQL(q);
+  const op=r.data.currentBulkOperation;
+  if(!op||op.status!=='COMPLETED') return res.status(400).json({error:'Bulk not ready'});
 
-    if (!op || op.status !== 'COMPLETED') {
-      return res.status(400).json({ error: 'Bulk not completed yet' });
-    }
+  const fetchRes=await fetch(op.url);
+  const gunzip=zlib.createGunzip();
+  stream.pipeline(fetchRes.body,gunzip,()=>{});
+  const rl=readline.createInterface({input:gunzip});
 
-    const fetchRes = await fetch(op.url);
-    const gunzip = zlib.createGunzip();
-    stream.pipeline(fetchRes.body, gunzip, () => {});
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="bulk.csv"');
+  res.write('order_number,created_at,utm_source,utm_medium,utm_campaign,utm_term,utm_content\n');
 
-    const rl = readline.createInterface({ input: gunzip });
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="shopify-bulk-utm.csv"');
-
-    const columns = ['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
-    res.write(columns.join(',') + '\n');
-
-    for await (const line of rl) {
-      if (!line.trim()) continue;
-      const parsed = JSON.parse(line);
-      const row = mapOrder(parsed);
-      const csv = columns.map(k => `"${(row[k]||'').replace(/"/g,'""')}"`).join(',');
-      res.write(csv + '\n');
-    }
-
-    res.end();
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  for await (const line of rl){
+    if(!line.trim()) continue;
+    const parsed=JSON.parse(line);
+    const row=mapOrder(parsed);
+    const csv=Object.values(row).map(v=>`"${(v||'').replace(/"/g,'""')}"`).join(',');
+    res.write(csv+'\n');
   }
+  res.end();
 });
 
-// =====================
-// SERVER START
-// =====================
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Server running on port', PORT));
+const PORT=process.env.PORT||3000;
+app.listen(PORT,()=>console.log('Server running on',PORT));
