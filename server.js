@@ -1,9 +1,8 @@
-// Shopify UTM Orders Dashboard — FINAL STABLE GRAPHQL VERSION
+// Shopify UTM Orders Dashboard — FINAL GRAPHQL VERSION (customerJourneySummary)
 
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
-const { URL } = require('url');
 const zlib = require('zlib');
 const readline = require('readline');
 const stream = require('stream');
@@ -39,7 +38,7 @@ async function shopifyGraphQL(query) {
   const json = await res.json();
 
   if (json.errors) {
-    console.error('GraphQL error:', json.errors);
+    console.error("GraphQL Error:", JSON.stringify(json.errors, null, 2));
     throw new Error(JSON.stringify(json.errors));
   }
 
@@ -59,61 +58,28 @@ function formatDateToIST(isoString){
   return `${ist.getUTCFullYear()}-${pad(ist.getUTCMonth()+1)}-${pad(ist.getUTCDate())} ${pad(ist.getUTCHours())}:${pad(ist.getUTCMinutes())}:${pad(ist.getUTCSeconds())}`;
 }
 
-function extractUtmFromUrl(urlString){
-  const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
-  if (!urlString) return out;
-
-  try {
-    const u = new URL(urlString.startsWith('http') ? urlString : 'https://dummy.com' + urlString);
-    for (const [k,v] of u.searchParams.entries()){
-      if (k.startsWith('utm_')) out[k] = v;
-    }
-  } catch {}
-
-  return out;
-}
-
-function extractUtmFromAttributes(attrs){
-  const out = { utm_source:'', utm_medium:'', utm_campaign:'', utm_term:'', utm_content:'' };
-
-  if (!Array.isArray(attrs)) return out;
-
-  for (const a of attrs){
-    const n = (a.name || '').toLowerCase();
-    const v = a.value || '';
-    if (!v) continue;
-
-    if (n.includes('utm_source')) out.utm_source = v;
-    if (n.includes('utm_medium')) out.utm_medium = v;
-    if (n.includes('utm_campaign')) out.utm_campaign = v;
-    if (n.includes('utm_term')) out.utm_term = v;
-    if (n.includes('utm_content')) out.utm_content = v;
-  }
-
-  return out;
-}
-
 function mapOrder(node){
-  const utmUrl = extractUtmFromUrl(node.landingSite || node.referringSite || '');
-  const utmAttr = extractUtmFromAttributes(node.noteAttributes || []);
+
+  const utm = node.customerJourneySummary?.firstVisit?.utmParameters || {};
 
   return {
     order_number: node.name,
     created_at: formatDateToIST(node.createdAt),
-    utm_source: utmUrl.utm_source || utmAttr.utm_source || '',
-    utm_medium: utmUrl.utm_medium || utmAttr.utm_medium || '',
-    utm_campaign: utmUrl.utm_campaign || utmAttr.utm_campaign || '',
-    utm_term: utmUrl.utm_term || utmAttr.utm_term || '',
-    utm_content: utmUrl.utm_content || utmAttr.utm_content || ''
+    utm_source: utm.source || '',
+    utm_medium: utm.medium || '',
+    utm_campaign: utm.campaign || '',
+    utm_term: utm.term || '',
+    utm_content: utm.content || ''
   };
 }
 
 /* =====================================================
-   PREVIEW (GraphQL Paginated)
+   PREVIEW (GraphQL Pagination)
 ===================================================== */
 
 app.get('/api/orders', async (req, res) => {
   try {
+
     const { start, end, cursor } = req.query;
 
     if (!start || !end)
@@ -135,9 +101,17 @@ app.get('/api/orders', async (req, res) => {
               id
               name
               createdAt
-              landingSite
-              referringSite
-              noteAttributes { name value }
+              customerJourneySummary {
+                firstVisit {
+                  utmParameters {
+                    source
+                    medium
+                    campaign
+                    term
+                    content
+                  }
+                }
+              }
             }
           }
           pageInfo {
@@ -170,6 +144,7 @@ app.get('/api/orders', async (req, res) => {
 
 app.post('/api/bulk/start', async (req,res)=>{
   try{
+
     const { start, end } = req.body;
 
     if (!start || !end)
@@ -187,9 +162,17 @@ app.post('/api/bulk/start', async (req,res)=>{
               id
               name
               createdAt
-              landingSite
-              referringSite
-              noteAttributes { name value }
+              customerJourneySummary {
+                firstVisit {
+                  utmParameters {
+                    source
+                    medium
+                    campaign
+                    term
+                    content
+                  }
+                }
+              }
             }
           }
           """
@@ -228,7 +211,7 @@ app.get('/api/bulk/status', async (req,res)=>{
 });
 
 /* =====================================================
-   BULK DOWNLOAD (Correct Filtering)
+   BULK DOWNLOAD
 ===================================================== */
 
 app.get('/api/bulk/download', async (req,res)=>{
@@ -260,10 +243,9 @@ app.get('/api/bulk/download', async (req,res)=>{
 
       const parsed = JSON.parse(line);
 
-      // Skip nested child objects
+      // Skip nested objects
       if(parsed.__parentId) continue;
 
-      // Ensure only Order objects
       if(!parsed.id || !parsed.id.includes('gid://shopify/Order/')) continue;
 
       const row = mapOrder(parsed);
