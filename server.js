@@ -167,17 +167,28 @@ app.get('/api/export.csv', async (req, res) => {
 
     const { start, end } = req.query;
 
-    if (!start || !end)
-      return res.status(400).json({ error:'start & end required' });
+    if (!start || !end) {
+      return res.status(400).json({ error: 'start & end required' });
+    }
 
-    const created_at_min = new Date(start+'T00:00:00Z').toISOString();
-    const created_at_max = new Date(end+'T23:59:59Z').toISOString();
+    const created_at_min = new Date(start + 'T00:00:00Z').toISOString();
+    const created_at_max = new Date(end + 'T23:59:59Z').toISOString();
 
-    let currentUrl = `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(created_at_min)}&created_at_max=${encodeURIComponent(created_at_max)}`;
+    let currentUrl =
+      `https://${SHOP}/admin/api/2025-07/orders.json?status=any&limit=250` +
+      `&created_at_min=${encodeURIComponent(created_at_min)}` +
+      `&created_at_max=${encodeURIComponent(created_at_max)}`;
 
-    res.setHeader('Content-Type','text/csv');
-    res.setHeader('Content-Disposition','attachment; filename="shopify-utm-export.csv"');
+    // IMPORTANT HEADERS
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="shopify-utm-export.csv"'
+    );
     res.setHeader('Cache-Control', 'no-cache');
+
+    // UTF-8 BOM for Excel compatibility
+    res.write('\uFEFF');
 
     const headers = [
       'order_number',
@@ -191,12 +202,14 @@ app.get('/api/export.csv', async (req, res) => {
 
     res.write(headers.join(',') + '\n');
 
-    let totalExported = 0;
+    const seenIds = new Set();
 
-    while (currentUrl){
+    while (currentUrl) {
 
-      const r = await fetch(currentUrl,{
-        headers:{ 'X-Shopify-Access-Token': TOKEN }
+      const r = await fetch(currentUrl, {
+        headers: {
+          'X-Shopify-Access-Token': TOKEN
+        }
       });
 
       if (!r.ok) {
@@ -209,39 +222,57 @@ app.get('/api/export.csv', async (req, res) => {
         break;
       }
 
-      for (const o of data.orders){
+      for (const o of data.orders) {
+
+        // DEDUPLICATION
+        if (seenIds.has(o.id)) continue;
+        seenIds.add(o.id);
 
         const row = mapOrder(o);
 
-        const line = headers.map(k =>
-          `"${(row[k] || '').replace(/"/g,'""')}"`
-        ).join(',');
+        // SAFE CSV ESCAPE
+        const line = headers.map(key => {
+
+          let value = row[key] || '';
+
+          value = String(value)
+            .replace(/"/g, '""')
+            .replace(/\r/g, ' ')
+            .replace(/\n/g, ' ');
+
+          return `"${value}"`;
+
+        }).join(',');
 
         res.write(line + '\n');
-
-        totalExported++;
       }
 
-      console.log('Exported:', totalExported);
-
-      // force flush every batch
-      await new Promise(resolve => setTimeout(resolve, 50));
+      // flush chunk
+      if (res.flushHeaders) {
+        res.flushHeaders();
+      }
 
       const link = r.headers.get('link');
 
-      currentUrl = link && link.includes('rel="next"')
-        ? link.match(/<([^>]+)>; rel="next"/)[1]
-        : null;
+      currentUrl =
+        link && link.includes('rel="next"')
+          ? link.match(/<([^>]+)>; rel="next"/)?.[1]
+          : null;
     }
 
     res.end();
 
-  } catch(err){
-    console.error(err);
-    res.status(500).json({ error: err.message });
+  } catch(err) {
+
+    console.error('CSV Export Error:', err);
+
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.end();
+    }
   }
 });
-
 /* =====================================================
    Start Server
 ===================================================== */
