@@ -162,7 +162,6 @@ app.get('/api/orders', async (req, res) => {
 /* =====================================================
    Export CSV (Streams While Fetching)
 ===================================================== */
-
 app.get('/api/export.csv', async (req, res) => {
   try {
 
@@ -178,28 +177,67 @@ app.get('/api/export.csv', async (req, res) => {
 
     res.setHeader('Content-Type','text/csv');
     res.setHeader('Content-Disposition','attachment; filename="shopify-utm-export.csv"');
+    res.setHeader('Cache-Control', 'no-cache');
 
-    const headers = ['order_number','created_at','utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
+    const headers = [
+      'order_number',
+      'created_at',
+      'utm_source',
+      'utm_medium',
+      'utm_campaign',
+      'utm_term',
+      'utm_content'
+    ];
+
     res.write(headers.join(',') + '\n');
+
+    let totalExported = 0;
 
     while (currentUrl){
 
-      const { orders, nextUrl } = await fetchOrdersPage(currentUrl);
+      const r = await fetch(currentUrl,{
+        headers:{ 'X-Shopify-Access-Token': TOKEN }
+      });
 
-      for (const o of orders){
-        const row = mapOrder(o);
-        const line = headers.map(k =>
-          `"${(row[k]||'').replace(/"/g,'""')}"`
-        ).join(',');
-        res.write(line + '\n');
+      if (!r.ok) {
+        throw new Error(await r.text());
       }
 
-      currentUrl = nextUrl;
+      const data = await r.json();
+
+      if (!data.orders || !Array.isArray(data.orders)) {
+        break;
+      }
+
+      for (const o of data.orders){
+
+        const row = mapOrder(o);
+
+        const line = headers.map(k =>
+          `"${(row[k] || '').replace(/"/g,'""')}"`
+        ).join(',');
+
+        res.write(line + '\n');
+
+        totalExported++;
+      }
+
+      console.log('Exported:', totalExported);
+
+      // force flush every batch
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const link = r.headers.get('link');
+
+      currentUrl = link && link.includes('rel="next"')
+        ? link.match(/<([^>]+)>; rel="next"/)[1]
+        : null;
     }
 
     res.end();
 
   } catch(err){
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
